@@ -2,6 +2,15 @@
 <html lang="ja">
 
 <head>
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-WRX1SYCL8Q"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag() { dataLayer.push(arguments); }
+    gtag('js', new Date());
+
+    gtag('config', 'G-WRX1SYCL8Q');
+  </script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>GPSトラッカー</title>
@@ -57,6 +66,7 @@
       z-index: 10;
       transition: background 0.15s;
     }
+
     #sidebar-resizer:hover,
     #sidebar-resizer.dragging {
       background: var(--border);
@@ -501,6 +511,7 @@
       position: relative;
       border-top: 1px solid var(--border);
     }
+
     #city-resizer::after {
       content: '· · ·';
       position: absolute;
@@ -512,6 +523,7 @@
       letter-spacing: 3px;
       line-height: 1;
     }
+
     #city-resizer:hover,
     #city-resizer.dragging {
       background: var(--surface2);
@@ -947,9 +959,11 @@
       flex-shrink: 1;
       transition: border-color 0.18s;
     }
+
     #searchBox:focus-within {
       border-color: var(--accent);
     }
+
     #searchInput {
       background: transparent;
       border: none;
@@ -960,9 +974,11 @@
       outline: none;
       width: 190px;
     }
+
     #searchInput::placeholder {
       color: var(--text-muted);
     }
+
     #searchClear {
       background: none;
       border: none;
@@ -975,9 +991,11 @@
       opacity: 0.5;
       transition: opacity 0.15s;
     }
+
     #searchClear:hover {
       opacity: 1;
     }
+
     #searchBtn {
       background: none;
       border: none;
@@ -990,6 +1008,7 @@
       transition: background 0.15s, color 0.15s;
       flex-shrink: 0;
     }
+
     #searchBtn:hover {
       background: var(--accent);
       color: #fff;
@@ -1207,7 +1226,7 @@
         const [baseLat, baseLon] = coords[i];
         let end = i;
         while (end + 1 < coords.length &&
-               haversineKm(baseLat, baseLon, coords[end + 1][0], coords[end + 1][1]) < THRESH_KM) {
+          haversineKm(baseLat, baseLon, coords[end + 1][0], coords[end + 1][1]) < THRESH_KM) {
           end++;
         }
         if (end > i && coords[end][2] - coords[i][2] >= MIN_MS) {
@@ -1566,7 +1585,7 @@
           const _ms = _c0 && _c0.length ? _c0[0][2] : null;
           if (_ms) {
             const _d = new Date(_ms), _z = n => String(n).padStart(2, '0');
-            fname.textContent = `${_z(_d.getMonth()+1)}/${_z(_d.getDate())} ${_z(_d.getHours())}:${_z(_d.getMinutes())}`;
+            fname.textContent = `${_z(_d.getMonth() + 1)}/${_z(_d.getDate())} ${_z(_d.getHours())}:${_z(_d.getMinutes())}`;
           } else {
             fname.textContent = `端末${dev.num}`;
           }
@@ -1958,7 +1977,7 @@
       if (csvCode === keyCode) return true;
       if (keyCode.startsWith(csvCode)) return true;
       if (csvCode.length >= 5 && keyCode.length >= 5 &&
-          csvCode.slice(0, 5) === keyCode.slice(0, 5)) {
+        csvCode.slice(0, 5) === keyCode.slice(0, 5)) {
         return parseInt(csvCode.slice(5), 10) === parseInt(keyCode.slice(5), 10);
       }
       return false;
