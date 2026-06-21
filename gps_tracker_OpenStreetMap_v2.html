@@ -1,0 +1,2407 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GPSトラッカー</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/shpjs@3.6.3/dist/shp.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Space+Mono:wght@400;700&display=swap');
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg: #f6f2f2;
+      --surface: #ffffff;
+      --surface2: #f1ebeb;
+      --border: #ddd0d0;
+      --text: #1c1010;
+      --text-muted: #8a7272;
+      --accent: #8b1c1c;
+      --accent-h: #a52020;
+    }
+
+    html,
+    body {
+      height: 100%;
+      font-family: 'Noto Sans JP', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      overflow: hidden;
+    }
+
+    /* ===== レイアウト ===== */
+    #app {
+      display: grid;
+      grid-template-rows: 52px 1fr;
+      grid-template-columns: var(--sidebar-w, 300px) 5px 1fr;
+      height: 100vh;
+    }
+
+    #sidebar-resizer {
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      border-left: 1px solid var(--border);
+      cursor: col-resize;
+      position: relative;
+      z-index: 10;
+      transition: background 0.15s;
+    }
+    #sidebar-resizer:hover,
+    #sidebar-resizer.dragging {
+      background: var(--border);
+    }
+
+    /* ===== ヘッダー ===== */
+    #header {
+      grid-column: 1 / -1;
+      background: var(--surface);
+      border-bottom: 2px solid var(--accent);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 10px;
+      box-shadow: 0 2px 8px rgba(139, 28, 28, 0.08);
+    }
+
+    .logo {
+      font-family: 'Space Mono', monospace;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+      flex-shrink: 0;
+    }
+
+    #header h1 {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .header-btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      padding: 6px 13px;
+      font-size: 12px;
+      font-family: 'Noto Sans JP', sans-serif;
+      cursor: pointer;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      transition: background 0.18s;
+      flex-shrink: 0;
+    }
+
+    .header-btn:hover {
+      background: var(--accent-h);
+    }
+
+    .header-btn.secondary {
+      background: var(--surface2);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+    }
+
+    .header-btn.secondary:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: #fff5f5;
+    }
+
+    .header-btn.secondary.active {
+      background: #fef3c7;
+      color: #92400e;
+      border-color: #c8900a;
+      font-weight: 700;
+    }
+
+    #locationDisplay {
+      margin-left: auto;
+      background: var(--surface);
+      border: 1.5px solid var(--accent);
+      border-radius: 4px;
+      padding: 4px 12px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+      font-family: 'Noto Sans JP', sans-serif;
+      white-space: nowrap;
+      flex-shrink: 0;
+      user-select: none;
+      cursor: pointer;
+      max-width: 460px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: background 0.08s, color 0.08s, border-color 0.08s;
+    }
+
+    #locationDisplay.copied {
+      background: var(--text);
+      color: #fff;
+      border-color: var(--text);
+    }
+
+    /* ===== サイドバー ===== */
+    #sidebar {
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .section-title {
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      padding: 12px 14px 6px;
+      font-family: 'Space Mono', monospace;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+      border-top: 1px solid var(--border);
+    }
+
+    .section-title:first-child {
+      border-top: none;
+    }
+
+    .count-badge {
+      background: #fff0f0;
+      border: 1px solid #f0cccc;
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 10px;
+      color: var(--accent);
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    /* コントロール共通 */
+    #deviceControls,
+    #boundaryControls {
+      flex-shrink: 0;
+    }
+
+    .filter-area {
+      padding: 0 12px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .filter-input {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: var(--text);
+      font-family: 'Noto Sans JP', sans-serif;
+      outline: none;
+      transition: border-color 0.18s;
+    }
+
+    .filter-input:focus {
+      border-color: var(--accent);
+    }
+
+    .filter-input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .bulk-btns {
+      display: flex;
+      gap: 5px;
+    }
+
+    .bulk-btn {
+      flex: 1;
+      padding: 5px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text-muted);
+      font-size: 11px;
+      font-family: 'Noto Sans JP', sans-serif;
+      cursor: pointer;
+      transition: all 0.15s;
+      text-align: center;
+    }
+
+    .bulk-btn:hover {
+      background: #fff0f0;
+      color: var(--accent);
+      border-color: #f0cccc;
+    }
+
+    /* ページナビ */
+    .page-nav {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .nav-btn {
+      width: 28px;
+      height: 28px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text);
+      font-size: 15px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s;
+      flex-shrink: 0;
+      line-height: 1;
+    }
+
+    .nav-btn:hover:not(:disabled) {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .nav-btn:disabled {
+      opacity: 0.25;
+      cursor: default;
+    }
+
+    .page-info {
+      flex: 1;
+      text-align: center;
+      font-size: 11px;
+      font-family: 'Space Mono', monospace;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .rank-badge {
+      font-family: 'Space Mono', monospace;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--text-muted);
+      min-width: 22px;
+      flex-shrink: 0;
+    }
+
+    /* グループヘッダー */
+    .group-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px 4px;
+      background: var(--surface2);
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      margin-top: 4px;
+    }
+
+    .group-header:first-child {
+      margin-top: 0;
+    }
+
+    .group-label {
+      font-size: 11px;
+      font-weight: 700;
+      font-family: 'Space Mono', monospace;
+      color: var(--accent);
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .group-mini-btn {
+      padding: 2px 7px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-size: 10px;
+      font-family: 'Noto Sans JP', sans-serif;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.14s;
+      flex-shrink: 0;
+    }
+
+    .group-mini-btn:hover {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    /* 端末カードリスト */
+    #deviceList {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding-bottom: 4px;
+    }
+
+    #deviceList::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    #deviceList::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    #deviceList::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 2px;
+    }
+
+    /* 端末カード */
+    .device-card {
+      margin: 0 12px 4px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      transition: border-color 0.18s;
+      animation: fadeIn 0.2s ease both;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    }
+
+    .device-card.active {
+      border-color: var(--card-color);
+    }
+
+    .device-header {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 8px 11px;
+      cursor: pointer;
+      user-select: none;
+      background: var(--surface);
+    }
+
+    .device-card.solo-view .device-header {
+      cursor: default;
+    }
+
+    .device-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--card-color);
+      flex-shrink: 0;
+      box-shadow: 0 0 5px var(--card-color);
+    }
+
+    .device-name {
+      font-size: 12px;
+      font-weight: 700;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .device-toggle {
+      width: 32px;
+      height: 17px;
+      border-radius: 9px;
+      background: var(--border);
+      position: relative;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+
+    .device-toggle::after {
+      content: '';
+      position: absolute;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: #fff;
+      top: 3px;
+      left: 3px;
+      transition: transform 0.2s;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    }
+
+    .device-toggle.on {
+      background: var(--card-color);
+    }
+
+    .device-toggle.on::after {
+      transform: translateX(15px);
+    }
+
+    .device-toggle.partial {
+      background: var(--text-muted);
+    }
+
+    .device-toggle.partial::after {
+      transform: translateX(7px);
+    }
+
+    .device-stats {
+      padding: 6px 11px 8px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      background: var(--surface2);
+    }
+
+    .stat-item {
+      background: var(--surface);
+      border-radius: 5px;
+      padding: 5px 8px;
+    }
+
+    .stat-label {
+      font-size: 9px;
+      color: var(--text-muted);
+      margin-bottom: 2px;
+      font-family: 'Space Mono', monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .stat-value {
+      font-size: 12px;
+      font-weight: 700;
+      font-family: 'Space Mono', monospace;
+    }
+
+    /* 市区町村ペイン 上下リサイズハンドル */
+    #city-resizer {
+      flex-shrink: 0;
+      height: 6px;
+      cursor: row-resize;
+      background: transparent;
+      display: none;
+      position: relative;
+      border-top: 1px solid var(--border);
+    }
+    #city-resizer::after {
+      content: '· · ·';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 8px;
+      color: var(--text-muted);
+      letter-spacing: 3px;
+      line-height: 1;
+    }
+    #city-resizer:hover,
+    #city-resizer.dragging {
+      background: var(--surface2);
+    }
+
+    /* 境界設定 - 市区町村ペイン */
+    #boundarySection {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      height: var(--city-pane-h, 220px);
+      min-height: 60px;
+      flex-shrink: 0;
+    }
+
+    #cityList {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 12px 8px;
+    }
+
+    #cityList::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    #cityList::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    #cityList::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 2px;
+    }
+
+    .city-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 6px;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background 0.14s;
+      font-size: 12px;
+    }
+
+    .city-row:hover {
+      background: var(--surface2);
+    }
+
+    .city-toggle {
+      width: 28px;
+      height: 15px;
+      border-radius: 8px;
+      background: var(--border);
+      position: relative;
+      transition: background 0.2s;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+
+    .city-toggle::after {
+      content: '';
+      position: absolute;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #fff;
+      top: 3px;
+      left: 3px;
+      transition: transform 0.2s;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+    }
+
+    .city-toggle.on {
+      background: #c8900a;
+    }
+
+    .city-toggle.on::after {
+      transform: translateX(13px);
+    }
+
+    .city-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .city-count {
+      font-size: 10px;
+      color: var(--text-muted);
+      font-family: 'Space Mono', monospace;
+      flex-shrink: 0;
+    }
+
+    .city-stat {
+      font-size: 10px;
+      color: var(--text-muted);
+      font-family: 'Space Mono', monospace;
+      flex-shrink: 0;
+      text-align: right;
+      min-width: 34px;
+    }
+
+    #cityListHeader {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 3px 12px 2px;
+      font-size: 9px;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+    }
+
+    #cityListHeader .h-toggle {
+      width: 28px;
+      flex-shrink: 0;
+    }
+
+    #cityListHeader .h-name {
+      flex: 1;
+    }
+
+    #cityListHeader .h-stat {
+      min-width: 34px;
+      text-align: right;
+      flex-shrink: 0;
+    }
+
+    .city-row.grayed {
+      opacity: 0.42;
+      pointer-events: none;
+    }
+
+    .city-row.grayed .city-toggle {
+      opacity: 0.3;
+    }
+
+    /* 濃度スライダー */
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .slider-label,
+    .slider-val {
+      font-size: 10px;
+      color: var(--text-muted);
+      font-family: 'Space Mono', monospace;
+      white-space: nowrap;
+    }
+
+    .slider-val {
+      min-width: 28px;
+      text-align: right;
+    }
+
+    .slider-row input[type=range] {
+      flex: 1;
+      accent-color: var(--accent);
+      cursor: pointer;
+      height: 4px;
+    }
+
+
+    /* 空状態 */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 28px 16px;
+      color: var(--text-muted);
+      text-align: center;
+    }
+
+    .empty-icon {
+      font-size: 26px;
+      opacity: 0.35;
+    }
+
+    .empty-text {
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    /* 地図 */
+    #map {
+      background: #e8e4e4;
+    }
+
+    .leaflet-tile-pane {
+      filter: none;
+    }
+
+    .leaflet-control-zoom a {
+      background: #fff !important;
+      color: var(--text) !important;
+      border-color: var(--border) !important;
+    }
+
+    .leaflet-control-zoom a:hover {
+      background: var(--surface2) !important;
+    }
+
+    .leaflet-control-attribution {
+      background: rgba(255, 255, 255, 0.9) !important;
+      color: var(--text-muted) !important;
+      font-size: 10px !important;
+    }
+
+    .leaflet-control-attribution a {
+      color: var(--accent) !important;
+    }
+
+    .leaflet-popup-content-wrapper {
+      background: #fff;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+    }
+
+    .leaflet-popup-tip {
+      background: #fff;
+    }
+
+    .popup-inner {
+      font-family: 'Space Mono', monospace;
+      font-size: 12px;
+    }
+
+    .popup-inner b {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 4px;
+    }
+
+    .leaflet-tooltip.town-tip {
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid #c8900a;
+      color: #7a4a00;
+      font-family: 'Noto Sans JP', sans-serif;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+      white-space: nowrap;
+    }
+
+    /* ローディング */
+    #loading {
+      position: fixed;
+      inset: 0;
+      background: var(--surface);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 12px;
+      z-index: 9999;
+      transition: opacity 0.4s;
+    }
+
+    #loading.hide {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    .loading-text {
+      font-family: 'Space Mono', monospace;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* プログレスバー */
+    #progress-bar {
+      display: none;
+      position: fixed;
+      top: 52px;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: var(--border);
+      z-index: 1000;
+    }
+
+    #progress-fill {
+      height: 100%;
+      background: var(--accent);
+      width: 0%;
+      transition: width 0.15s ease;
+    }
+
+    /* ホバーツールチップ */
+    #hover-tooltip {
+      position: fixed;
+      z-index: 9000;
+      background: rgba(255, 255, 255, 0.96);
+      color: #222;
+      border-radius: 5px;
+      padding: 6px 10px;
+      font-family: 'Space Mono', monospace;
+      font-size: 11px;
+      line-height: 1.55;
+      pointer-events: none;
+      display: none;
+      white-space: nowrap;
+      box-shadow: 0 3px 14px rgba(0, 0, 0, 0.18);
+      border: 1px solid rgba(0, 0, 0, 0.12);
+    }
+
+    #hover-tooltip .ht-label {
+      font-weight: 700;
+      margin-bottom: 1px;
+    }
+
+    #hover-tooltip .ht-time {
+      color: rgba(0, 0, 0, 0.50);
+      font-size: 10px;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(3px);
+      }
+
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    /* ファイル別展開リスト */
+    .device-name-expandable {
+      cursor: pointer;
+    }
+
+    .device-name-expandable:hover {
+      color: var(--accent);
+    }
+
+    .device-file-list {
+      padding: 4px 8px 6px 28px;
+      background: var(--surface2);
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .file-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 3px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+
+    .file-row:hover {
+      background: rgba(0, 0, 0, 0.05);
+    }
+
+    .file-toggle {
+      width: 24px;
+      height: 13px;
+      border-radius: 7px;
+      background: var(--border);
+      position: relative;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+
+    .file-toggle::after {
+      content: '';
+      position: absolute;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #fff;
+      top: 2px;
+      left: 2px;
+      transition: transform 0.2s;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+    }
+
+    .file-toggle.on {
+      background: var(--card-color);
+    }
+
+    .file-toggle.on::after {
+      transform: translateX(11px);
+    }
+
+    .file-name {
+      font-size: 11px;
+      font-family: 'Space Mono', monospace;
+      color: var(--text-muted);
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* ===== 住所検索 ===== */
+    #searchBox {
+      display: flex;
+      align-items: center;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      flex-shrink: 1;
+      transition: border-color 0.18s;
+    }
+    #searchBox:focus-within {
+      border-color: var(--accent);
+    }
+    #searchInput {
+      background: transparent;
+      border: none;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: var(--text);
+      font-family: 'Noto Sans JP', sans-serif;
+      outline: none;
+      width: 190px;
+    }
+    #searchInput::placeholder {
+      color: var(--text-muted);
+    }
+    #searchClear {
+      background: none;
+      border: none;
+      padding: 4px 6px;
+      cursor: pointer;
+      color: var(--text-muted);
+      font-size: 11px;
+      line-height: 1;
+      flex-shrink: 0;
+      opacity: 0.5;
+      transition: opacity 0.15s;
+    }
+    #searchClear:hover {
+      opacity: 1;
+    }
+    #searchBtn {
+      background: none;
+      border: none;
+      border-left: 1px solid var(--border);
+      padding: 5px 9px;
+      cursor: pointer;
+      color: var(--text-muted);
+      font-size: 13px;
+      line-height: 1;
+      transition: background 0.15s, color 0.15s;
+      flex-shrink: 0;
+    }
+    #searchBtn:hover {
+      background: var(--accent);
+      color: #fff;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="hover-tooltip">
+    <div class="ht-label"></div>
+    <div class="ht-time"></div>
+  </div>
+  <div id="loading">
+    <div class="spinner"></div>
+    <div class="loading-text">地図を読み込み中...</div>
+  </div>
+  <div id="progress-bar">
+    <div id="progress-fill"></div>
+  </div>
+
+  <div id="app">
+    <header id="header">
+      <div class="logo">◈ GPS TRACKER</div>
+      <h1>軌跡マップ</h1>
+      <label class="header-btn" for="folderInput">🗜 GPX ZIPを開く</label>
+      <input type="file" id="folderInput" accept=".zip" style="display:none">
+      <label class="header-btn secondary" id="boundaryBtn" for="boundaryInput">🗺 境界データ読み込み</label>
+      <input type="file" id="boundaryInput" accept=".zip" multiple style="display:none">
+      <button class="header-btn secondary" id="boundaryClearBtn" style="display:none;padding:6px 9px"
+        title="読み込んだ境界データを全て削除" onclick="clearBoundaryData()">✕</button>
+      <label class="header-btn secondary" id="csvReportBtn" for="csvReportInput">📊 住所コード読み込み</label>
+      <input type="file" id="csvReportInput" accept=".csv" style="display:none">
+      <button class="header-btn secondary" id="aerialBtn" onclick="toggleAerial()">🛰 航空写真</button>
+      <div id="searchBox">
+        <input type="text" id="searchInput" placeholder="住所・郵便番号で検索" autocomplete="off">
+        <button id="searchClear" title="消去">✕</button>
+        <button id="searchBtn" title="検索">🔍</button>
+      </div>
+      <div id="locationDisplay">—</div>
+    </header>
+
+    <aside id="sidebar">
+      <div class="section-title">
+        端末一覧
+        <span class="count-badge" id="deviceCount"></span>
+      </div>
+      <div id="deviceControls"></div>
+      <div id="deviceList"></div>
+
+      <div id="city-resizer"></div>
+      <div id="boundarySection" style="display:none">
+        <div class="section-title">
+          <span id="boundarySectionTitle">境界設定</span>
+          <span class="count-badge" id="cityCount"></span>
+        </div>
+        <div id="boundaryControls">
+          <div class="filter-area">
+            <input class="filter-input" type="text" id="cityFilterInput" placeholder="市区町村で絞り込み"
+              oninput="onCityFilter(this.value)">
+            <div class="bulk-btns">
+              <button class="bulk-btn" onclick="bulkCityVisibility(true)">全て表示</button>
+              <button class="bulk-btn" onclick="bulkCityVisibility(false)">全て非表示</button>
+            </div>
+            <div class="slider-row">
+              <span class="slider-label">塗り濃度</span>
+              <input type="range" id="fillOpacitySlider" min="0" max="100" value="40"
+                oninput="onFillOpacity(this.value)">
+              <span id="fillOpacityVal" class="slider-val">40%</span>
+            </div>
+          </div>
+        </div>
+        <div id="cityListHeader" style="display:none"></div>
+        <div id="cityList"></div>
+      </div>
+
+    </aside>
+
+    <div id="sidebar-resizer"></div>
+    <div id="map"></div>
+  </div>
+
+  <script>
+    // ===== Shift-JIS対応 DBFパーサ (e-stat等の日本語シェイプファイル用) =====
+    function parseDbfSjis(buffer) {
+      const view = new DataView(buffer);
+      const nRec = view.getInt32(4, true);
+      const hdrSize = view.getInt16(8, true);
+      const recSize = view.getInt16(10, true);
+      const ascDec = new TextDecoder('ascii');
+      const sjisDec = new TextDecoder('shift_jis');
+
+      // フィールド定義 (32バイト×N, ヘッダー先頭32バイト後から)
+      const fields = [];
+      let pos = 32;
+      while (pos + 32 <= hdrSize) {
+        if (view.getUint8(pos) === 0x0D) break;
+        const nameBytes = new Uint8Array(buffer, pos, 11);
+        const name = ascDec.decode(nameBytes).replace(/\0/g, '').trim();
+        const type = String.fromCharCode(view.getUint8(pos + 11));
+        const length = view.getUint8(pos + 16);
+        if (name) fields.push({ name, type, length });
+        pos += 32;
+      }
+
+      // レコード読み取り
+      const records = [];
+      let rp = hdrSize;
+      for (let i = 0; i < nRec; i++) {
+        if (rp >= buffer.byteLength) break;
+        const del = view.getUint8(rp++);
+        if (del === 0x1A) break; // EOF
+        const rec = {};
+        for (const f of fields) {
+          if (rp + f.length > buffer.byteLength) break;
+          const bytes = new Uint8Array(buffer, rp, f.length);
+          rec[f.name] = (f.type === 'C')
+            ? sjisDec.decode(bytes).trim()    // 文字列フィールド: Shift-JIS
+            : ascDec.decode(bytes).trim();     // 数値等: ASCII
+          rp += f.length;
+        }
+        records.push(rec);
+      }
+      return records;
+    }
+
+    // ===== 定数 =====
+    const N_BUCKETS = 8;         // 速度段階数
+    const MAX_SPEED = 30;        // km/h 以上はすべて最薄
+
+    // ===== 状態 =====
+    let DEVICES = [];
+    let GROUPS = [];
+    let GPX_DATA = {};   // key → [[lat, lon, timeMs], ...]
+    let GPX_SPEEDS = {};   // key → Float32Array (各セグメントのkm/h)
+    let speedPolylines = {}; // key → L.polyline[N_BUCKETS]
+    let startMarkers = {};
+    let endMarkers = {};
+    let stayMarkers = {};
+    let visibility = {};
+    let filterText = '';
+    let updateTimer = null;
+    let groupExpanded = {};
+
+    // 境界ポリゴン状態（キーは市区町村コードで都道府県をまたいだ衝突を防ぐ）
+    let cityGroups = {};
+    let cityVisibility = {};
+    let citySetai = {};
+    let cityCodes = {};        // key → 市区町村コード（ソート用）
+    let cityNames = {};        // key → 市区町村名（表示用）
+    let cityPrefCodes = {};    // key → 都道府県コード（2桁）
+    let cityFilterText = '';
+    let loadedPrefCodes = new Set(); // 読み込み済み都道府県コード
+    let boundaryFeatureCount = 0;    // 読み込み済み全フィーチャ数
+
+    const PREF_NAMES = {
+      '01': '北海道', '02': '青森県', '03': '岩手県', '04': '宮城県', '05': '秋田県',
+      '06': '山形県', '07': '福島県', '08': '茨城県', '09': '栃木県', '10': '群馬県',
+      '11': '埼玉県', '12': '千葉県', '13': '東京都', '14': '神奈川県', '15': '新潟県',
+      '16': '富山県', '17': '石川県', '18': '福井県', '19': '山梨県', '20': '長野県',
+      '21': '岐阜県', '22': '静岡県', '23': '愛知県', '24': '三重県', '25': '滋賀県',
+      '26': '京都府', '27': '大阪府', '28': '兵庫県', '29': '奈良県', '30': '和歌山県',
+      '31': '鳥取県', '32': '島根県', '33': '岡山県', '34': '広島県', '35': '山口県',
+      '36': '徳島県', '37': '香川県', '38': '愛媛県', '39': '高知県', '40': '福岡県',
+      '41': '佐賀県', '42': '長崎県', '43': '熊本県', '44': '大分県', '45': '宮崎県',
+      '46': '鹿児島県', '47': '沖縄県',
+    };
+
+    // CSVレポート状態
+    let allFeaturesByCode = {};   // KEY_CODE文字列 → feature[]
+    let csvTowns = [];            // [{code, prefName, cityName, townName}]
+    let townLayers = {};          // code → L.GeoJSON
+    let townVisibility = {};      // code → bool
+    let townFilterText = '';
+    let csvMode = false;
+
+
+    // ===== 速度ヘルパー =====
+    function speedToBucket(kmh) {
+      return Math.min(N_BUCKETS - 1, Math.floor(kmh / MAX_SPEED * N_BUCKETS));
+    }
+    function bucketToOpacity(b) {
+      return 0.9 - (b / (N_BUCKETS - 1)) * 0.78;
+    }
+
+    function haversineKm(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const dφ = (lat2 - lat1) * Math.PI / 180;
+      const dλ = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dφ / 2) ** 2
+        + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dλ / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function calcSpeeds(coords) {
+      const n = coords.length;
+      const out = new Float32Array(Math.max(0, n - 1));
+      for (let i = 0; i < n - 1; i++) {
+        const [la1, lo1, t1] = coords[i];
+        const [la2, lo2, t2] = coords[i + 1];
+        const dtHr = (t2 - t1) / 3_600_000;
+        out[i] = (dtHr > 0 && dtHr < 2)
+          ? Math.min(haversineKm(la1, lo1, la2, lo2) / dtHr, 999)
+          : -1; // 長時間ギャップ or 無効タイムスタンプ → 描画しない
+      }
+      return out;
+    }
+
+    function computeStays(coords) {
+      const THRESH_KM = 0.03;
+      const MIN_MS = 30 * 60 * 1000;
+      const stays = [];
+      let i = 0;
+      while (i < coords.length) {
+        const [baseLat, baseLon] = coords[i];
+        let end = i;
+        while (end + 1 < coords.length &&
+               haversineKm(baseLat, baseLon, coords[end + 1][0], coords[end + 1][1]) < THRESH_KM) {
+          end++;
+        }
+        if (end > i && coords[end][2] - coords[i][2] >= MIN_MS) {
+          let sumLat = 0, sumLon = 0;
+          for (let k = i; k <= end; k++) { sumLat += coords[k][0]; sumLon += coords[k][1]; }
+          const cnt = end - i + 1;
+          stays.push({ lat: sumLat / cnt, lon: sumLon / cnt, startTime: coords[i][2], endTime: coords[end][2] });
+          i = end + 1;
+        } else {
+          i++;
+        }
+      }
+      return stays;
+    }
+
+    // ===== ズーム適応サンプリング =====
+    function getSampleRate(zoom) {
+      if (zoom >= 18) return 1;
+      if (zoom >= 17) return 2;
+      if (zoom >= 16) return 4;
+      if (zoom >= 15) return 8;
+      if (zoom >= 14) return 16;
+      if (zoom >= 13) return 32;
+      return 64;
+    }
+
+    // 表示範囲内セグメントをバケット別に振り分ける
+    function buildBucketSegments(coords, speeds, zoom, bounds) {
+      const rate = getSampleRate(zoom);
+      const n = coords.length;
+      const buckets = Array.from({ length: N_BUCKETS }, () => []);
+      if (n < 2) return buckets;
+
+      const sw = bounds.getSouthWest(), ne = bounds.getNorthEast();
+      const dlat = (ne.lat - sw.lat) * 0.2;
+      const dlon = (ne.lng - sw.lng) * 0.2;
+      const minLat = sw.lat - dlat, maxLat = ne.lat + dlat;
+      const minLon = sw.lng - dlon, maxLon = ne.lng + dlon;
+      function inBounds(lat, lon) {
+        return lat >= minLat && lat <= maxLat && lon >= minLon && lon <= maxLon;
+      }
+
+      for (let i = 0; i < n - 1; i += rate) {
+        const j = Math.min(i + rate, n - 1);
+        const [la0, lo0] = coords[i];
+        const [la1, lo1] = coords[j];
+        if (!inBounds(la0, lo0) && !inBounds(la1, lo1)) continue;
+
+        // このチャンクの平均速度（ギャップを含む場合はスキップ）
+        let sum = 0;
+        let hasGap = false;
+        for (let k = i; k < j; k++) {
+          if (speeds[k] < 0) { hasGap = true; break; }
+          sum += speeds[k];
+        }
+        if (hasGap) continue;
+
+        buckets[speedToBucket(Math.min(sum / (j - i), MAX_SPEED))].push([[la0, lo0], [la1, lo1]]);
+      }
+      return buckets;
+    }
+
+    function updatePolylines() {
+      if (!DEVICES.length) return;
+      const zoom = map.getZoom(), bounds = map.getBounds();
+      DEVICES.forEach(dev => {
+        const polys = speedPolylines[dev.key];
+        if (!polys || !polys.some(p => map.hasLayer(p))) return;
+        const coords = GPX_DATA[dev.key];
+        const speeds = GPX_SPEEDS[dev.key];
+        if (!coords || !coords.length || !speeds) return;
+        const buckets = buildBucketSegments(coords, speeds, zoom, bounds);
+        for (let b = 0; b < N_BUCKETS; b++) polys[b].setLatLngs(buckets[b]);
+      });
+    }
+
+    function schedulePolylineUpdate() {
+      if (updateTimer) clearTimeout(updateTimer);
+      updateTimer = setTimeout(updatePolylines, 120);
+    }
+
+    // ===== 色生成 (黄金角 100色) =====
+    function deviceColor(idx) {
+      const hue = (idx * 137.508) % 360;
+      return `hsl(${Math.round(hue)}, 78%, 44%)`;
+    }
+
+    // ===== GPXパーサ (タイムスタンプ込み) =====
+    function parseGPX(xmlText) {
+      const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
+      return Array.from(doc.querySelectorAll('trkpt')).map(pt => {
+        const lat = parseFloat(pt.getAttribute('lat'));
+        const lon = parseFloat(pt.getAttribute('lon'));
+        const timeEl = pt.querySelector('time');
+        const t = timeEl ? new Date(timeEl.textContent.trim()).getTime() : 0;
+        return [lat, lon, t];
+      }).filter(([lat, lon]) => !isNaN(lat) && !isNaN(lon));
+    }
+
+    // ===== ファイル名解析 =====
+    // 例: 20260501006_福岡ポスティング_YDM20070489_10.gpx → company=福岡ポスティング, model=YDM20070489, num=10
+    function parseFilename(filename) {
+      const base = filename.replace(/\.gpx$/i, '');
+      const parts = base.split('_');
+      const num = parseInt(parts[parts.length - 1], 10);
+      const model = parts.length >= 2 ? parts[parts.length - 2] : '';
+      const company = parts.length >= 3 ? parts[1] : '';
+      return { num: isNaN(num) ? 9999 : num, model, company, base };
+    }
+
+    function shortModel(model) {
+      return model.length > 9 ? `${model.slice(0, 3)}...${model.slice(-3)}` : model;
+    }
+
+    // ===== グループ構築 (端末番号=モデル単位) =====
+    function buildGroups() {
+      const modelMap = new Map();
+      DEVICES.forEach(dev => {
+        if (!modelMap.has(dev.model)) modelMap.set(dev.model, []);
+        modelMap.get(dev.model).push(dev);
+      });
+      GROUPS = [...modelMap.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([model, devices]) => ({ model, company: devices[0]?.company || '', devices }));
+    }
+
+    // ===== メモリ不足判定 =====
+    function isOutOfMemoryError(e) {
+      if (!e) return false;
+      if (e instanceof RangeError) return true;
+      const msg = String(e.message || e).toLowerCase();
+      return msg.includes('out of memory') || msg.includes('allocation failed') || msg.includes('quota');
+    }
+
+    // ===== フォルダ読み込み =====
+    async function loadFolder(files) {
+      const targets = Array.from(files).filter(f => f.name.toLowerCase().endsWith('.gpx'));
+      if (!targets.length) { alert('GPXファイルが見つかりません。'); return; }
+      const pb = document.getElementById('progress-bar'), pf = document.getElementById('progress-fill');
+      pb.style.display = 'block'; pf.style.width = '0%';
+      clearMapLayers();
+      DEVICES = []; GPX_DATA = {}; GPX_SPEEDS = {}; visibility = {}; filterText = '';
+
+      const parsed = [];
+      try {
+        for (let i = 0; i < targets.length; i++) {
+          pf.style.width = `${Math.round((i / targets.length) * 85)}%`;
+          try {
+            const text = await targets[i].text();
+            const coords = parseGPX(text);
+            if (!coords.length) continue;
+            parsed.push({ ...parseFilename(targets[i].name), coords });
+          } catch (e) {
+            if (isOutOfMemoryError(e)) throw e;
+            console.warn('parse error:', targets[i].name, e);
+          }
+        }
+        parsed.sort((a, b) => a.model.localeCompare(b.model) || a.num - b.num);
+        const models = [...new Set(parsed.map(p => p.model))].sort((a, b) => a.localeCompare(b));
+        const modelColorMap = {};
+        models.forEach((m, i) => { modelColorMap[m] = deviceColor(i); });
+        parsed.forEach(p => {
+          const key = p.base, color = modelColorMap[p.model];
+          DEVICES.push({ key, label: `端末${p.num} (${shortModel(p.model)})`, color, weight: 3, num: p.num, model: p.model, company: p.company });
+          GPX_DATA[key] = p.coords;
+          GPX_SPEEDS[key] = calcSpeeds(p.coords);
+          visibility[key] = true;
+        });
+        buildGroups();
+        pf.style.width = '92%';
+        initMapLayers();
+        pf.style.width = '100%';
+        setTimeout(() => { pb.style.display = 'none'; pf.style.width = '0%'; }, 500);
+        render();
+      } catch (e) {
+        pb.style.display = 'none'; pf.style.width = '0%';
+        if (isOutOfMemoryError(e)) {
+          alert(`メモリ不足のため読み込みを中断しました（${parsed.length}/${targets.length}件処理済み）。\nファイル数や1ファイルあたりのデータ量を減らしてから再度お試しください。`);
+        } else {
+          console.error(e);
+          alert(`読み込み中にエラーが発生しました。\n${e.message || e}`);
+        }
+      }
+    }
+
+    // ===== レイヤー管理 =====
+    const canvasRenderer = L.canvas({ padding: 0.5 });
+
+    function clearMapLayers() {
+      Object.values(speedPolylines).forEach(polys => polys.forEach(p => { if (map.hasLayer(p)) map.removeLayer(p); }));
+      Object.values(startMarkers).forEach(m => { if (map.hasLayer(m)) map.removeLayer(m); });
+      Object.values(endMarkers).forEach(m => { if (map.hasLayer(m)) map.removeLayer(m); });
+      Object.values(stayMarkers).forEach(ms => ms.forEach(m => { if (map.hasLayer(m)) map.removeLayer(m); }));
+      speedPolylines = {}; startMarkers = {}; endMarkers = {}; stayMarkers = {};
+    }
+
+    function mkIcon(color, symbol, size = 20) {
+      const fs = size < 18 ? 10 : 12;
+      return L.divIcon({
+        html: `<div style="width:${size}px;height:${size}px;background:#fff;border:2px solid ${color};border-radius:50%;box-shadow:0 1px 4px rgba(0,0,0,0.28);display:flex;align-items:center;justify-content:center;font-size:${fs}px;color:${color};font-weight:bold;line-height:1">${symbol}</div>`,
+        className: '',
+        iconSize: [size, size],
+        iconAnchor: [size / 2, size / 2],
+      });
+    }
+
+    function initMapLayers() {
+      DEVICES.forEach(dev => {
+        const coords = GPX_DATA[dev.key];
+        if (!coords || !coords.length) return;
+
+        const polys = [];
+        for (let b = 0; b < N_BUCKETS; b++) {
+          const opacity = bucketToOpacity(b);
+          const poly = L.polyline([], {
+            color: dev.color, weight: 3, opacity,
+            smoothFactor: 1.2, renderer: canvasRenderer,
+          });
+          poly.on('click', e => {
+            L.popup().setLatLng(e.latlng)
+              .setContent(`<div class="popup-inner"><b style="color:${dev.color}">${dev.label}</b>ポイント数: ${coords.length.toLocaleString()}</div>`)
+              .openOn(map);
+          });
+          polys.push(poly);
+        }
+        speedPolylines[dev.key] = polys;
+
+        const first = coords[0], last = coords[coords.length - 1];
+        const companyLabel = dev.company ? `${dev.company} ${dev.model}` : dev.model;
+
+        const sm = L.marker([first[0], first[1]], { icon: mkIcon(dev.color, '▶'), zIndexOffset: 100 });
+        sm.bindTooltip(`${companyLabel}<br>開始 ${fmtTime(first[2])}`, { sticky: false, direction: 'top', className: 'town-tip' });
+        sm.on('tooltipopen', () => { _stayTipOpen = true; hoverTip.style.display = 'none'; });
+        sm.on('tooltipclose', () => { _stayTipOpen = false; });
+        startMarkers[dev.key] = sm;
+
+        const em = L.marker([last[0], last[1]], { icon: mkIcon(dev.color, '■'), zIndexOffset: 100 });
+        em.bindTooltip(`${companyLabel}<br>終了 ${fmtTime(last[2])}`, { sticky: false, direction: 'top', className: 'town-tip' });
+        em.on('tooltipopen', () => { _stayTipOpen = true; hoverTip.style.display = 'none'; });
+        em.on('tooltipclose', () => { _stayTipOpen = false; });
+        endMarkers[dev.key] = em;
+
+        stayMarkers[dev.key] = computeStays(coords).map(s => {
+          const m = L.marker([s.lat, s.lon], { icon: mkIcon(dev.color, '◎', 16), zIndexOffset: 90 });
+          m.bindTooltip(`${companyLabel}<br>滞在 ${fmtTime(s.startTime)}<br>　〜 ${fmtTime(s.endTime)}`, { sticky: false, direction: 'top', className: 'town-tip' });
+          m.on('tooltipopen', () => { _stayTipOpen = true; hoverTip.style.display = 'none'; });
+          m.on('tooltipclose', () => { _stayTipOpen = false; });
+          return m;
+        });
+      });
+      const allPts = Object.values(GPX_DATA).flatMap(c => c.map(([la, lo]) => [la, lo]));
+      if (allPts.length) map.fitBounds(L.latLngBounds(allPts), { padding: [40, 40] });
+    }
+
+    // ===== 地図初期化 =====
+    const map = L.map('map', { zoomControl: true, attributionControl: true });
+    const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      maxZoom: 19,
+    });
+    const gsiAerialLayer = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', {
+      attribution: '© <a href="https://maps.gsi.go.jp/development/ichiran.html">国土地理院</a>',
+      maxZoom: 18,
+    });
+    osmLayer.addTo(map);
+    let aerialMode = false;
+    function toggleAerial() {
+      aerialMode = !aerialMode;
+      if (aerialMode) {
+        map.removeLayer(osmLayer);
+        gsiAerialLayer.addTo(map);
+      } else {
+        map.removeLayer(gsiAerialLayer);
+        osmLayer.addTo(map);
+      }
+      document.getElementById('aerialBtn').classList.toggle('active', aerialMode);
+    }
+    map.setView([35.6812, 139.7671], 12);
+    // 境界レイヤー用ペーン（GPS軌跡より下に描画）
+    map.createPane('boundaryPane');
+    map.getPane('boundaryPane').style.zIndex = 350;
+    // 境界ポリゴンはフィーチャ数が多くSVGだとDOM負荷が大きいためCanvas描画にする
+    const boundaryCanvasRenderer = L.canvas({ pane: 'boundaryPane', padding: 0.5 });
+    map.getPane('tooltipPane').style.zIndex = 9100;
+    map.on('zoomend', updatePolylines);
+    map.on('moveend', schedulePolylineUpdate);
+    map.doubleClickZoom.disable();
+    map.on('dblclick', e => {
+      const zoom = map.getZoom();
+      const size = map.getSize();
+      const dx = e.containerPoint.x - size.x / 2;
+      const dy = e.containerPoint.y - size.y / 2;
+      const sidebarW = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w')) || 300;
+      const gmOffset = 50 + (sidebarW - 180) / (700 - 180) * (300 - 20);
+      const worldPx = map.project(e.latlng, zoom).subtract([dx + gmOffset, dy]);
+      const c = map.unproject(worldPx, zoom);
+      window.open(`https://www.google.com/maps/@${c.lat.toFixed(6)},${c.lng.toFixed(6)},${zoom}z`, '_blank');
+    });
+
+    // ===== 表示更新 =====
+    function render() {
+      DEVICES.forEach(dev => {
+        const polys = speedPolylines[dev.key];
+        const sm = startMarkers[dev.key], em = endMarkers[dev.key];
+        const sms = stayMarkers[dev.key] || [];
+        if (!polys) return;
+        const show = visibility[dev.key];
+        if (show) {
+          polys.forEach(p => { if (!map.hasLayer(p)) p.addTo(map); });
+          if (sm && !map.hasLayer(sm)) sm.addTo(map);
+          if (em && !map.hasLayer(em)) em.addTo(map);
+          sms.forEach(m => { if (!map.hasLayer(m)) m.addTo(map); });
+        } else {
+          polys.forEach(p => { if (map.hasLayer(p)) map.removeLayer(p); });
+          if (sm && map.hasLayer(sm)) map.removeLayer(sm);
+          if (em && map.hasLayer(em)) map.removeLayer(em);
+          sms.forEach(m => { if (map.hasLayer(m)) map.removeLayer(m); });
+        }
+      });
+      updatePolylines();
+      updateSidebar();
+    }
+
+    // ===== サイドバー更新 =====
+    function makeGroupCard(group, gi, rank) {
+      const allOn = group.devices.every(d => visibility[d.key]);
+      const someOn = group.devices.some(d => visibility[d.key]);
+      const toggleClass = allOn ? 'on' : someOn ? 'partial' : '';
+      const color = group.devices[0]?.color || '#888';
+      const multi = group.devices.length > 1;
+      const expanded = multi && !!groupExpanded[gi];
+      const arrow = multi ? `<span style="font-size:9px;opacity:0.55;margin-left:3px">${expanded ? '▴' : '▾'}</span>` : '';
+      const card = document.createElement('div');
+      card.className = 'device-card' + (someOn ? ' active' : '');
+      card.style.setProperty('--card-color', color);
+      card.innerHTML = `
+      <div class="device-header">
+        ${rank != null ? `<span class="rank-badge">#${rank}</span>` : ''}
+        <div class="device-dot"></div>
+        <div class="device-name${multi ? ' device-name-expandable' : ''}"${multi ? ` onclick="toggleGroupExpand(${gi})"` : ''}>${group.company ? `<span style="opacity:0.65;margin-right:4px">${group.company}</span>` : ''}${group.model}${arrow}</div>
+        <div class="device-toggle ${toggleClass}" onclick="handleGroupToggle(${gi})"></div>
+      </div>`;
+      if (expanded) {
+        const fileList = document.createElement('div');
+        fileList.className = 'device-file-list';
+        group.devices.forEach(dev => {
+          const on = visibility[dev.key];
+          const fileRow = document.createElement('div');
+          fileRow.className = 'file-row';
+          const ftog = document.createElement('div');
+          ftog.className = 'file-toggle' + (on ? ' on' : '');
+          ftog.addEventListener('click', e => { e.stopPropagation(); visibility[dev.key] = !visibility[dev.key]; render(); });
+          const fname = document.createElement('span');
+          fname.className = 'file-name';
+          const _c0 = GPX_DATA[dev.key];
+          const _ms = _c0 && _c0.length ? _c0[0][2] : null;
+          if (_ms) {
+            const _d = new Date(_ms), _z = n => String(n).padStart(2, '0');
+            fname.textContent = `${_z(_d.getMonth()+1)}/${_z(_d.getDate())} ${_z(_d.getHours())}:${_z(_d.getMinutes())}`;
+          } else {
+            fname.textContent = `端末${dev.num}`;
+          }
+          fileRow.appendChild(ftog);
+          fileRow.appendChild(fname);
+          fileRow.addEventListener('click', () => { visibility[dev.key] = !visibility[dev.key]; render(); });
+          fileList.appendChild(fileRow);
+        });
+        card.appendChild(fileList);
+      }
+      return card;
+    }
+
+    function updateSidebar() {
+      const controls = document.getElementById('deviceControls');
+      const list = document.getElementById('deviceList');
+      const badge = document.getElementById('deviceCount');
+      controls.innerHTML = ''; list.innerHTML = '';
+
+      if (!DEVICES.length) {
+        badge.textContent = '';
+        list.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">📂</div>
+          <div class="empty-text">GPX ZIPを開いて<br>軌跡データを読み込んでください</div>
+        </div>`;
+        return;
+      }
+
+      badge.textContent = `${GROUPS.length}台 / ${DEVICES.length}件`;
+
+      controls.innerHTML = `
+      <div class="filter-area">
+        <input class="filter-input" type="text" placeholder="端末番号で絞り込み"
+               value="${filterText.replace(/"/g, '&quot;')}" oninput="onFilter(this.value)">
+        <div class="bulk-btns">
+          <button class="bulk-btn" onclick="bulkVisibility(true)">全て表示</button>
+          <button class="bulk-btn" onclick="bulkVisibility(false)">全て非表示</button>
+        </div>
+      </div>`;
+
+      const q = filterText.toLowerCase();
+      let hasAny = false;
+      GROUPS.forEach((group, gi) => {
+        if (q && !group.model.toLowerCase().includes(q) &&
+          !group.devices.some(d => String(d.num).includes(q))) return;
+        hasAny = true;
+        list.appendChild(makeGroupCard(group, gi, null));
+      });
+      if (!hasAny) list.innerHTML = `<div style="padding:20px;text-align:center;font-size:12px;color:var(--text-muted)">該当なし</div>`;
+    }
+
+    // ===== イベントハンドラ =====
+    function handleGroupToggle(gi) {
+      const group = GROUPS[gi];
+      if (!group) return;
+      const allOn = group.devices.every(d => visibility[d.key]);
+      group.devices.forEach(d => { visibility[d.key] = !allOn; });
+      render();
+    }
+    function toggleGroupExpand(gi) {
+      groupExpanded[gi] = !groupExpanded[gi];
+      updateSidebar();
+    }
+    function onFilter(val) { filterText = val; updateSidebar(); }
+    function bulkVisibility(show) { DEVICES.forEach(d => { visibility[d.key] = show; }); render(); }
+
+    // ===== ZIP読み込み =====
+    async function loadZip(file) {
+      let zip;
+      try {
+        zip = await JSZip.loadAsync(file, {
+          decodeFileName: bytes => {
+            try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+            catch { return new TextDecoder('shift_jis').decode(bytes); }
+          }
+        });
+      } catch (e) {
+        if (isOutOfMemoryError(e)) {
+          alert('メモリ不足のためZIPファイルを読み込めませんでした。\nファイルサイズを小さくしてから再度お試しください。');
+        } else {
+          alert('ZIPファイルの読み込みに失敗しました。');
+        }
+        return;
+      }
+      const entries = Object.values(zip.files).filter(f => !f.dir && f.name.toLowerCase().endsWith('.gpx'));
+      if (!entries.length) { alert('ZIP内にGPXファイルが見つかりません。'); return; }
+      const fakeFiles = entries.map(entry => ({
+        name: entry.name.split('/').pop(),
+        text: () => entry.async('string'),
+      }));
+      await loadFolder(fakeFiles);
+    }
+
+    // ===== ファイル入力 =====
+    document.getElementById('folderInput').addEventListener('change', function () {
+      if (this.files.length) loadZip(this.files[0]);
+      this.value = '';
+    });
+
+    // ===== CSVレポート =====
+    document.getElementById('csvReportInput').addEventListener('change', async function () {
+      if (this.files.length) await loadCSVReport(this.files[0]);
+      this.value = '';
+    });
+
+    // ===== 境界シェイプファイル =====
+    document.getElementById('boundaryInput').addEventListener('change', async function () {
+      const files = Array.from(this.files);
+      this.value = '';
+      if (!files.length) return;
+      for (const file of files) {
+        let zip;
+        try {
+          zip = await JSZip.loadAsync(file, {
+            decodeFileName: bytes => {
+              try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+              catch { return new TextDecoder('shift_jis').decode(bytes); }
+            }
+          });
+        } catch (e) {
+          alert(`ZIPファイルの読み込みに失敗しました。(${file.name})`);
+          continue;
+        }
+        const entries = Object.values(zip.files).filter(f => !f.dir);
+        const shpEntry = entries.find(f => f.name.toLowerCase().endsWith('.shp'));
+        const dbfEntry = entries.find(f => f.name.toLowerCase().endsWith('.dbf'));
+        if (!shpEntry) { alert(`ZIP内に.shpファイルが見つかりません。(${file.name})`); continue; }
+        const fakeFiles = [];
+        const shpBuf = await shpEntry.async('arraybuffer');
+        fakeFiles.push({ name: shpEntry.name.split('/').pop(), arrayBuffer: () => Promise.resolve(shpBuf) });
+        if (dbfEntry) {
+          const dbfBuf = await dbfEntry.async('arraybuffer');
+          fakeFiles.push({ name: dbfEntry.name.split('/').pop(), arrayBuffer: () => Promise.resolve(dbfBuf) });
+        }
+        await loadBoundaryFromFiles(fakeFiles);
+      }
+    });
+
+    async function loadBoundaryFromFiles(files) {
+      const arr = Array.from(files);
+      const shpFile = arr.find(f => f.name.toLowerCase().endsWith('.shp'));
+      const dbfFile = arr.find(f => f.name.toLowerCase().endsWith('.dbf'));
+      if (!shpFile) { alert('.shp ファイルが見つかりません。'); return; }
+
+      if (loadedPrefCodes.size >= 2) {
+        const proceed = confirm(
+          `既に${loadedPrefCodes.size}都道府県分の境界データを読み込んでいます。\n` +
+          `読み込む都道府県が増えるほど描画が遅くなる場合があります。続行しますか？`
+        );
+        if (!proceed) return;
+      }
+
+      const btn = document.getElementById('boundaryBtn');
+      btn.style.pointerEvents = 'none';
+      btn.textContent = '⏳ 読み込み中...';
+      btn.classList.remove('active');
+
+      try {
+        const shpBuf = await shpFile.arrayBuffer();
+        const dbfBuf = dbfFile ? await dbfFile.arrayBuffer() : null;
+
+        // e-stat の DBF は Shift-JIS のため自前でデコード
+        const geoms = shp.parseShp(shpBuf);
+        const attrs = dbfBuf ? parseDbfSjis(dbfBuf) : [];
+        const geojson = {
+          type: 'FeatureCollection',
+          features: geoms.map((g, i) => ({ type: 'Feature', geometry: g, properties: attrs[i] || {} })),
+        };
+        if (!geojson.features?.length) throw new Error('フィーチャが見つかりませんでした');
+
+        // KEY_CODEインデックス構築（CSVマッチング用、KEY_CODEは全国一意なので追加するだけでよい）
+        geojson.features.forEach(f => {
+          const code = String(f.properties?.KEY_CODE || f.properties?.KEYCODE || '').trim();
+          if (code) {
+            if (!allFeaturesByCode[code]) allFeaturesByCode[code] = [];
+            allFeaturesByCode[code].push(f);
+          }
+        });
+
+        // 市区町村ごとにグルーピング（都道府県+市区町村コードをキーにして複数県の同名市区町村衝突を防ぐ）
+        const cityFeatMap = {};
+        geojson.features.forEach(f => {
+          const p = f.properties || {};
+          const city = p.CITY_NAME || p.name || '不明';
+          const prefCode = p.PREF != null ? String(p.PREF).padStart(2, '0') : String(p.KEY_CODE || '').slice(0, 2);
+          const cityCode = (p.PREF != null && p.CITY != null)
+            ? (prefCode + String(p.CITY).padStart(3, '0'))
+            : String(p.KEY_CODE || '').slice(0, 5);
+          const key = cityCode || `${prefCode || '??'}_${city}`;
+          if (!cityFeatMap[key]) cityFeatMap[key] = { city, prefCode, code: cityCode || key, features: [] };
+          cityFeatMap[key].features.push(f);
+          if (prefCode) loadedPrefCodes.add(prefCode);
+        });
+
+        const style0 = () => ({ fillColor: '#FFFBBB', fillOpacity: cityFillOpacity, color: '#DBC900', weight: 1.5, opacity: 0.9 });
+
+        if (boundaryFeatureCount === 0) {
+          // 初回読み込み時のみ塗り濃度をリセット
+          cityFillOpacity = 0.40;
+          const slider = document.getElementById('fillOpacitySlider');
+          if (slider) { slider.value = 40; document.getElementById('fillOpacityVal').textContent = '40%'; }
+        }
+
+        Object.entries(cityFeatMap).forEach(([key, entry]) => {
+          const { city, prefCode, code, features } = entry;
+          cityNames[key] = city;
+          cityCodes[key] = code;
+          cityPrefCodes[key] = prefCode;
+          citySetai[key] = features.reduce((s, f) => s + (parseInt(f.properties?.SETAI, 10) || 0), 0);
+
+          // 同じ市区町村キーを再読み込みした場合は古いレイヤーを差し替える
+          if (cityGroups[key] && map.hasLayer(cityGroups[key])) map.removeLayer(cityGroups[key]);
+
+          const layer = L.geoJSON({ type: 'FeatureCollection', features }, {
+            style: style0, pane: 'boundaryPane', renderer: boundaryCanvasRenderer,
+            onEachFeature: (feat, lyr) => {
+              const p = feat.properties || {};
+              const label = [p.CITY_NAME, p.S_NAME].filter(Boolean).join(' ') || p.name || '';
+              if (label) lyr.bindTooltip(label, { permanent: false, sticky: true, className: 'town-tip', direction: 'top' });
+              lyr.on('mouseover', () => lyr.setStyle({ fillOpacity: Math.min(1, cityFillOpacity + 0.25), weight: 2.5 }));
+              lyr.on('mouseout', () => layer.resetStyle(lyr));
+            },
+          });
+          if (!csvMode) layer.addTo(map);
+          cityGroups[key] = layer;
+          if (!(key in cityVisibility)) cityVisibility[key] = !csvMode;
+        });
+
+        boundaryFeatureCount += geojson.features.length;
+
+        document.getElementById('boundarySection').style.display = 'flex';
+        document.getElementById('city-resizer').style.display = 'block';
+        document.getElementById('boundaryClearBtn').style.display = 'inline-flex';
+
+        if (csvMode) {
+          // CSVモード: 市区町村リストは表示せず町丁目フィルタを適用
+          applyCSVFilter();
+        } else {
+          document.getElementById('cityCount').textContent = `${Object.keys(cityGroups).length}市区町村`;
+          cityFilterText = '';
+          document.getElementById('cityFilterInput').value = '';
+          updateCityList();
+        }
+
+        const prefLabel = loadedPrefCodes.size > 1 ? `${loadedPrefCodes.size}都道府県 / ` : '';
+        btn.innerHTML = `🗺 境界 ${prefLabel}${boundaryFeatureCount.toLocaleString()}件`;
+        btn.classList.add('active');
+      } catch (e) {
+        console.error(e);
+        alert(`シェイプファイルの読み込みに失敗しました。\n${e.message}`);
+        if (boundaryFeatureCount > 0) {
+          const prefLabel = loadedPrefCodes.size > 1 ? `${loadedPrefCodes.size}都道府県 / ` : '';
+          btn.innerHTML = `🗺 境界 ${prefLabel}${boundaryFeatureCount.toLocaleString()}件`;
+          btn.classList.add('active');
+        } else {
+          btn.innerHTML = '🗺 境界データ読み込み';
+        }
+      } finally {
+        btn.style.pointerEvents = '';
+      }
+    }
+
+    function clearBoundaryData() {
+      if (!confirm('読み込んだ境界データを全て削除しますか？')) return;
+
+      Object.values(cityGroups).forEach(g => { if (map.hasLayer(g)) map.removeLayer(g); });
+      Object.values(townLayers).forEach(g => { if (map.hasLayer(g)) map.removeLayer(g); });
+      cityGroups = {}; cityVisibility = {}; citySetai = {}; cityCodes = {}; cityNames = {}; cityPrefCodes = {};
+      townLayers = {};
+      allFeaturesByCode = {};
+      loadedPrefCodes = new Set();
+      boundaryFeatureCount = 0;
+
+      document.getElementById('boundarySection').style.display = 'none';
+      document.getElementById('city-resizer').style.display = 'none';
+      document.getElementById('boundaryClearBtn').style.display = 'none';
+
+      const btn = document.getElementById('boundaryBtn');
+      btn.innerHTML = '🗺 境界データ読み込み';
+      btn.classList.remove('active');
+
+      if (csvMode) updateTownList();
+    }
+
+    function updateCityList() {
+      const hdr = document.getElementById('cityListHeader');
+      hdr.innerHTML =
+        '<div class="h-toggle"></div>' +
+        '<span class="h-name">市区町村名</span>' +
+        '<span class="h-stat">世帯数</span>';
+      hdr.style.display = 'flex';
+
+      const el = document.getElementById('cityList');
+      el.innerHTML = '';
+      const q = cityFilterText.toLowerCase();
+      const showPref = loadedPrefCodes.size > 1;
+      Object.keys(cityGroups)
+        .map(key => {
+          const prefName = showPref ? (PREF_NAMES[cityPrefCodes[key]] || '') : '';
+          const label = prefName ? `${prefName} ${cityNames[key] || key}` : (cityNames[key] || key);
+          return { key, label };
+        })
+        .sort((a, b) => (cityCodes[a.key] || a.key).localeCompare(cityCodes[b.key] || b.key))
+        .filter(({ label }) => !q || label.toLowerCase().includes(q))
+        .forEach(({ key, label }) => {
+          const on = cityVisibility[key];
+          const setai = citySetai[key] || 0;
+          const row = document.createElement('div');
+          row.className = 'city-row';
+
+          const tog = document.createElement('div');
+          tog.className = 'city-toggle' + (on ? ' on' : '');
+          tog.addEventListener('click', () => toggleCity(key, !cityVisibility[key]));
+
+          const nm = document.createElement('span');
+          nm.className = 'city-name';
+          nm.textContent = label;
+
+          const ct = document.createElement('span');
+          ct.className = 'city-stat';
+          ct.title = '世帯数';
+          ct.textContent = setai > 0 ? setai.toLocaleString() : '—';
+
+          row.appendChild(tog);
+          row.appendChild(nm);
+          row.appendChild(ct);
+          el.appendChild(row);
+        });
+      if (!el.children.length)
+        el.innerHTML = '<div style="padding:8px 12px;font-size:11px;color:var(--text-muted)">該当なし</div>';
+    }
+
+    function toggleCity(key, show) {
+      cityVisibility[key] = show;
+      const g = cityGroups[key];
+      if (!g) return;
+      if (show && !map.hasLayer(g)) g.addTo(map);
+      else if (!show && map.hasLayer(g)) map.removeLayer(g);
+      updateCityList();
+    }
+
+    function bulkCityVisibility(show) {
+      if (csvMode) { bulkTownVisibility(show); return; }
+      Object.entries(cityGroups).forEach(([key, g]) => {
+        cityVisibility[key] = show;
+        if (show && !map.hasLayer(g)) g.addTo(map);
+        else if (!show && map.hasLayer(g)) map.removeLayer(g);
+      });
+      updateCityList();
+    }
+
+    function onCityFilter(val) {
+      if (csvMode) { onTownFilter(val); return; }
+      cityFilterText = val; updateCityList();
+    }
+
+    let cityFillOpacity = 0.40;
+
+    function onFillOpacity(val) {
+      cityFillOpacity = val / 100;
+      if (csvMode) {
+        Object.values(townLayers).forEach(g => g.setStyle({ fillOpacity: cityFillOpacity }));
+      } else {
+        Object.values(cityGroups).forEach(g => g.setStyle({ fillOpacity: cityFillOpacity }));
+      }
+      document.getElementById('fillOpacityVal').textContent = val + '%';
+    }
+
+    // ===== CSVレポート =====
+
+    function parseCSVLine(line) {
+      const cols = [];
+      let inQuote = false, cur = '';
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') { inQuote = !inQuote; }
+        else if (ch === ',' && !inQuote) { cols.push(cur); cur = ''; }
+        else { cur += ch; }
+      }
+      cols.push(cur);
+      return cols;
+    }
+
+    function matchCode(csvCode, keyCode) {
+      csvCode = String(csvCode).trim();
+      keyCode = String(keyCode || '').trim();
+      if (!csvCode || !keyCode) return false;
+      if (csvCode === keyCode) return true;
+      if (keyCode.startsWith(csvCode)) return true;
+      if (csvCode.length >= 5 && keyCode.length >= 5 &&
+          csvCode.slice(0, 5) === keyCode.slice(0, 5)) {
+        return parseInt(csvCode.slice(5), 10) === parseInt(keyCode.slice(5), 10);
+      }
+      return false;
+    }
+
+    async function loadCSVReport(file) {
+      const btn = document.getElementById('csvReportBtn');
+      btn.style.pointerEvents = 'none';
+      btn.textContent = '⏳ 読み込み中...';
+      btn.classList.remove('active');
+
+      try {
+        const buf = await file.arrayBuffer();
+        const text = new TextDecoder('shift_jis').decode(buf);
+        const lines = text.split(/\r?\n/);
+        if (lines.length < 2) throw new Error('データが見つかりません');
+
+        const towns = [];
+        const seenCodes = new Set();
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          const cols = parseCSVLine(line);
+          const code = (cols[1] || '').trim();
+          const prefName = (cols[2] || '').trim();
+          const cityName = (cols[3] || '').trim();
+          const townName = (cols[4] || '').trim();
+          const statHouseholds = parseInt((cols[5] || '').replace(/,/g, ''), 10) || 0;
+          const deliveryHouseholds = parseInt((cols[6] || '').replace(/,/g, ''), 10) || 0;
+          if (code && /^\d+$/.test(code) && !seenCodes.has(code)) {
+            seenCodes.add(code);
+            towns.push({ code, prefName, cityName, townName, statHouseholds, deliveryHouseholds });
+          }
+        }
+        if (!towns.length) throw new Error('有効な住所コードが見つかりません');
+
+        // 既存の町丁目レイヤーをクリア
+        Object.values(townLayers).forEach(g => { if (map.hasLayer(g)) map.removeLayer(g); });
+        // 市区町村レイヤーを非表示
+        Object.values(cityGroups).forEach(g => { if (map.hasLayer(g)) map.removeLayer(g); });
+
+        csvTowns = towns;
+        csvMode = true;
+        townLayers = {};
+        townFilterText = '';
+        townVisibility = {};
+        csvTowns.forEach(t => { townVisibility[t.code] = true; });
+
+        // UIをCSVモードに切り替え
+        document.getElementById('boundarySectionTitle').textContent = '住所コード';
+        document.getElementById('cityFilterInput').placeholder = '町丁目名で絞り込み';
+        document.getElementById('cityFilterInput').value = '';
+        document.getElementById('boundarySection').style.display = 'flex';
+        document.getElementById('city-resizer').style.display = 'block';
+        document.getElementById('cityListHeader').innerHTML =
+          '<div class="h-toggle"></div>' +
+          '<span class="h-name">町丁目名</span>' +
+          '<span class="h-stat">統計上<br>世帯数</span>' +
+          '<span class="h-stat">配達見込<br>世帯数</span>';
+        document.getElementById('cityListHeader').style.display = 'flex';
+
+        if (Object.keys(allFeaturesByCode).length > 0) {
+          applyCSVFilter();
+        } else {
+          updateTownList();
+        }
+
+        btn.textContent = `📊 住所コード: ${towns.length}件`;
+        btn.classList.add('active');
+      } catch (e) {
+        console.error(e);
+        alert(`CSVの読み込みに失敗しました。\n${e.message}`);
+        btn.textContent = '📊 住所コード読み込み';
+      } finally {
+        btn.style.pointerEvents = '';
+      }
+    }
+
+    function applyCSVFilter() {
+      Object.values(townLayers).forEach(g => { if (map.hasLayer(g)) map.removeLayer(g); });
+      townLayers = {};
+
+      const fillOp = cityFillOpacity;
+      const townStyle = () => ({ fillColor: '#FFFBBB', fillOpacity: fillOp, color: '#DBC900', weight: 1.5, opacity: 0.9 });
+
+      csvTowns.forEach(town => {
+        const matched = [];
+        for (const [code, features] of Object.entries(allFeaturesByCode)) {
+          if (matchCode(town.code, code)) { matched.push(...features); break; }
+        }
+        if (!matched.length) return;
+
+        const layer = L.geoJSON({ type: 'FeatureCollection', features: matched }, {
+          style: townStyle, pane: 'boundaryPane', renderer: boundaryCanvasRenderer,
+          onEachFeature: (feat, lyr) => {
+            const p = feat.properties || {};
+            const label = [p.CITY_NAME, p.S_NAME].filter(Boolean).join(' ') || p.name || town.townName || '';
+            if (label) lyr.bindTooltip(label, { permanent: false, sticky: true, className: 'town-tip', direction: 'top' });
+            lyr.on('mouseover', () => lyr.setStyle({ fillOpacity: Math.min(1, fillOp + 0.25), weight: 2.5 }));
+            lyr.on('mouseout', () => layer.resetStyle(lyr));
+          },
+        });
+        townLayers[town.code] = layer;
+        if (townVisibility[town.code]) layer.addTo(map);
+      });
+
+      updateTownList();
+    }
+
+    function updateTownList() {
+      const el = document.getElementById('cityList');
+      el.innerHTML = '';
+
+      if (Object.keys(allFeaturesByCode).length === 0) {
+        el.innerHTML = '<div style="padding:12px;font-size:11px;color:var(--text-muted);text-align:center">境界データを先に読み込んでください</div>';
+        document.getElementById('cityCount').textContent = `${csvTowns.length}件`;
+        return;
+      }
+
+      const matchedCount = csvTowns.filter(t => townLayers[t.code]).length;
+      document.getElementById('cityCount').textContent = `${matchedCount}/${csvTowns.length}件`;
+
+      const q = townFilterText.toLowerCase();
+      const filtered = csvTowns.filter(t =>
+        !q || t.townName.toLowerCase().includes(q) || t.cityName.toLowerCase().includes(q)
+      );
+
+      filtered.forEach(town => {
+        const hasLayer = !!townLayers[town.code];
+        const on = hasLayer && townVisibility[town.code];
+        const row = document.createElement('div');
+        row.className = 'city-row' + (!hasLayer ? ' grayed' : '');
+
+        const tog = document.createElement('div');
+        tog.className = 'city-toggle' + (on ? ' on' : '');
+        if (hasLayer) {
+          tog.addEventListener('click', e => { e.stopPropagation(); toggleTown(town.code, !townVisibility[town.code]); });
+        }
+
+        const nm = document.createElement('span');
+        nm.className = 'city-name';
+        nm.innerHTML = (town.cityName ? `<span style="font-size:9px;color:var(--text-muted);margin-right:3px">${town.cityName}</span>` : '')
+          + (town.townName || town.code);
+
+        const st = document.createElement('span');
+        st.className = 'city-stat';
+        st.title = '統計上世帯数';
+        st.textContent = town.statHouseholds > 0 ? town.statHouseholds.toLocaleString() : '—';
+
+        const dl = document.createElement('span');
+        dl.className = 'city-stat';
+        dl.title = '配達見込み世帯数';
+        dl.textContent = town.deliveryHouseholds > 0 ? town.deliveryHouseholds.toLocaleString() : '—';
+
+        row.appendChild(tog);
+        row.appendChild(nm);
+        row.appendChild(st);
+        row.appendChild(dl);
+        if (hasLayer) row.addEventListener('click', () => toggleTown(town.code, !townVisibility[town.code]));
+        el.appendChild(row);
+      });
+
+      if (!el.children.length)
+        el.innerHTML = '<div style="padding:8px 12px;font-size:11px;color:var(--text-muted)">該当なし</div>';
+    }
+
+    function toggleTown(code, show) {
+      townVisibility[code] = show;
+      const g = townLayers[code];
+      if (!g) return;
+      if (show && !map.hasLayer(g)) g.addTo(map);
+      else if (!show && map.hasLayer(g)) map.removeLayer(g);
+      updateTownList();
+    }
+
+    function bulkTownVisibility(show) {
+      csvTowns.forEach(town => {
+        townVisibility[town.code] = show;
+        const g = townLayers[town.code];
+        if (!g) return;
+        if (show && !map.hasLayer(g)) g.addTo(map);
+        else if (!show && map.hasLayer(g)) map.removeLayer(g);
+      });
+      updateTownList();
+    }
+
+    function onTownFilter(val) { townFilterText = val; updateTownList(); }
+
+    // ===== ホバーツールチップ =====
+    const HOVER_PX = 8;    // ヒット半径（ピクセル）
+    const MIN_ZOOM_HOVER = 13;  // このズーム未満は無効
+
+    const hoverTip = document.getElementById('hover-tooltip');
+    const htLabel = hoverTip.querySelector('.ht-label');
+    const htTime = hoverTip.querySelector('.ht-time');
+    let _hoverRaf = null;
+    let _lastHoverE = null;
+    let _stayTipOpen = false;
+
+    function fmtTime(ms) {
+      if (!ms) return '日時不明';
+      const d = new Date(ms);
+      const z = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}/${z(d.getMonth() + 1)}/${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`;
+    }
+
+    const MIN_STAY_MS = 30 * 60 * 1000; // 30分以上の滞在を表示
+
+    function findStay(coords, idx) {
+      const [baseLat, baseLon] = coords[idx];
+      const THRESH_KM = 0.03; // 30m以内を同一地点とみなす
+      let start = idx, end = idx;
+      for (let i = idx - 1; i >= 0; i--) {
+        if (haversineKm(baseLat, baseLon, coords[i][0], coords[i][1]) < THRESH_KM) start = i;
+        else break;
+      }
+      for (let i = idx + 1; i < coords.length; i++) {
+        if (haversineKm(baseLat, baseLon, coords[i][0], coords[i][1]) < THRESH_KM) end = i;
+        else break;
+      }
+      return { startTime: coords[start][2], endTime: coords[end][2], duration: coords[end][2] - coords[start][2] };
+    }
+
+    function showHoverTip(dev, time, cx, cy) {
+      if (_stayTipOpen) return;
+      htLabel.style.color = dev.color;
+      htLabel.textContent = dev.company ? `${dev.company} ${dev.model}` : dev.model;
+      htTime.textContent = fmtTime(time);
+      hoverTip.style.display = 'block';
+      const tw = 210, th = 44;
+      let x = cx + 14, y = cy - th - 8;
+      if (x + tw > window.innerWidth) x = cx - tw - 14;
+      if (y < 6) y = cy + 14;
+      hoverTip.style.left = x + 'px';
+      hoverTip.style.top = y + 'px';
+    }
+
+    function hideHoverTip() { hoverTip.style.display = 'none'; }
+
+    function doHoverSearch(e) {
+      if (map.getZoom() < MIN_ZOOM_HOVER) { hideHoverTip(); return; }
+
+      const mp = e.containerPoint;
+      const ll0 = map.containerPointToLatLng(mp);
+      const ll1 = map.containerPointToLatLng([mp.x + HOVER_PX, mp.y + HOVER_PX]);
+      const latTol = Math.abs(ll1.lat - ll0.lat);
+      const lonTol = Math.abs(ll1.lng - ll0.lng);
+      const mLat = ll0.lat, mLon = ll0.lng;
+
+      let best = null, bestDist = HOVER_PX + 1;
+
+      for (let di = 0; di < DEVICES.length; di++) {
+        const dev = DEVICES[di];
+        if (!visibility[dev.key]) continue;
+        const coords = GPX_DATA[dev.key];
+        if (!coords) continue;
+        for (let i = 0; i < coords.length; i++) {
+          const lat = coords[i][0], lon = coords[i][1];
+          // lat/lon バウンディングボックスで大半を除外（高速）
+          if (lat < mLat - latTol || lat > mLat + latTol) continue;
+          if (lon < mLon - lonTol || lon > mLon + lonTol) continue;
+          // 通過した点のみピクセル距離を計算
+          const px = map.latLngToContainerPoint([lat, lon]);
+          const dist = Math.hypot(px.x - mp.x, px.y - mp.y);
+          if (dist < bestDist) { bestDist = dist; best = { dev, time: coords[i][2], idx: i, coords }; }
+        }
+      }
+
+      if (best) {
+        const oe = e.originalEvent;
+        showHoverTip(best.dev, best.time, oe.clientX, oe.clientY);
+      } else {
+        hideHoverTip();
+      }
+    }
+
+    map.on('mousemove', e => {
+      _lastHoverE = e;
+      if (_hoverRaf) return;
+      _hoverRaf = requestAnimationFrame(() => { _hoverRaf = null; doHoverSearch(_lastHoverE); });
+    });
+    map.on('mouseout', hideHoverTip);
+    map.on('dragstart', hideHoverTip);
+    map.on('zoomstart', hideHoverTip);
+
+    // ===== クリック位置の住所表示 =====
+    // 都道府県・市区町村 → Nominatim、町丁目 → 国土地理院
+    let _geoAbort = null;
+    map.on('click', async e => {
+      const disp = document.getElementById('locationDisplay');
+      disp.textContent = '取得中…';
+      if (_geoAbort) _geoAbort.abort();
+      const ctrl = new AbortController();
+      _geoAbort = ctrl;
+      const { lat, lng } = e.latlng;
+      try {
+        const [nomRes, gsiRes] = await Promise.all([
+          fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=ja`, { signal: ctrl.signal }),
+          fetch(`https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress?lat=${lat}&lon=${lng}`, { signal: ctrl.signal }),
+        ]);
+        const [nomJson, gsiJson] = await Promise.all([nomRes.json(), gsiRes.json()]);
+
+        const a = nomJson.address || {};
+        let pref = '';
+        if (a.state && /[都道府県]$/.test(a.state)) {
+          pref = a.state;
+        } else if (a.province && /[都道府県]$/.test(a.province)) {
+          pref = a.province;
+        } else {
+          const dnParts = (nomJson.display_name || '').split(',').map(s => s.trim());
+          pref = dnParts.find(s => /[都道府県]$/.test(s)) || a.state || a.province || '';
+        }
+        // 横浜市・名古屋市・大阪市など政令指定都市の区はaddress.suburbに入る（東京23区はaddress.cityに入るため対象外）
+        const ward = (a.suburb && /区$/.test(a.suburb)) ? a.suburb : '';
+        const cityArr = [a.city, a.city_district, a.county, a.town, a.village, ward]
+          .filter(s => s && s !== pref && !/[都道府県]$/.test(s));
+        const city = [...new Set(cityArr)].join('');
+        const town = gsiJson?.results?.lv01Nm || a.quarter || (ward ? '' : a.suburb) || a.neighbourhood || '';
+
+        const parts = [pref, city, town].filter(Boolean);
+        disp.textContent = parts.length ? parts.join('　') : '—';
+      } catch (err) {
+        if (err.name !== 'AbortError') disp.textContent = '—';
+      }
+    });
+
+    // ===== 住所検索 =====
+    async function doAddressSearch() {
+      const q = document.getElementById('searchInput').value.trim();
+      if (!q) return;
+      const btn = document.getElementById('searchBtn');
+      btn.textContent = '⏳';
+      btn.style.pointerEvents = 'none';
+      try {
+        const isPostal = /^[\d\-]+$/.test(q);
+        let searchQuery = q;
+        if (isPostal) {
+          const zipcode = q.replace(/-/g, '');
+          const zipRes = await fetch(`https://zipcloud.ibsnet.co.jp/api/search?zipcode=${encodeURIComponent(zipcode)}`);
+          const zipJson = await zipRes.json();
+          if (!zipJson.results?.length) { alert('該当する郵便番号が見つかりませんでした。'); return; }
+          const r = zipJson.results[0];
+          searchQuery = [r.address1, r.address2, r.address3].filter(Boolean).join('');
+        }
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchQuery)}&format=json&accept-language=ja&limit=1&countrycodes=jp`;
+        const res = await fetch(url);
+        const json = await res.json();
+        if (!json.length) { alert('該当する住所が見つかりませんでした。'); return; }
+        const { lat, lon, boundingbox } = json[0];
+        if (boundingbox) {
+          const bounds = L.latLngBounds(
+            [+boundingbox[0], +boundingbox[2]],
+            [+boundingbox[1], +boundingbox[3]]
+          );
+          const zoom = Math.min(17, Math.max(16, map.getBoundsZoom(bounds)));
+          map.setView([+lat, +lon], zoom, { animate: false });
+        } else {
+          map.setView([+lat, +lon], 17, { animate: false });
+        }
+      } catch (e) {
+        alert('検索に失敗しました。');
+      } finally {
+        btn.textContent = '🔍';
+        btn.style.pointerEvents = '';
+      }
+    }
+    document.getElementById('searchInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter') doAddressSearch();
+    });
+    document.getElementById('searchClear').addEventListener('click', () => {
+      document.getElementById('searchInput').value = '';
+      document.getElementById('searchInput').focus();
+    });
+    document.getElementById('searchBtn').addEventListener('click', doAddressSearch);
+
+    document.getElementById('locationDisplay').addEventListener('click', function () {
+      const text = this.textContent;
+      if (!text || text === '—' || text === '取得中…') return;
+      navigator.clipboard.writeText(text).then(() => {
+        this.classList.add('copied');
+        setTimeout(() => this.classList.remove('copied'), 100);
+      });
+    });
+
+    // ===== 初期描画 =====
+    updateSidebar();
+    setTimeout(() => document.getElementById('loading').classList.add('hide'), 500);
+
+    // ===== サイドバー 左右リサイズ =====
+    (function () {
+      const resizer = document.getElementById('sidebar-resizer');
+      let startX, startW;
+      resizer.addEventListener('mousedown', e => {
+        startX = e.clientX;
+        startW = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w')) || 300;
+        resizer.classList.add('dragging');
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        function onMove(e) {
+          const w = Math.max(180, Math.min(700, startW + (e.clientX - startX)));
+          document.documentElement.style.setProperty('--sidebar-w', w + 'px');
+          map.invalidateSize();
+        }
+        function onUp() {
+          resizer.classList.remove('dragging');
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+        }
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+        e.preventDefault();
+      });
+    })();
+
+    // ===== 市区町村ペイン 上下リサイズ =====
+    (function () {
+      const resizer = document.getElementById('city-resizer');
+      let startY, startH;
+      resizer.addEventListener('mousedown', e => {
+        startY = e.clientY;
+        startH = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--city-pane-h')) || 220;
+        resizer.classList.add('dragging');
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+        function onMove(e) {
+          const h = Math.max(60, Math.min(800, startH - (e.clientY - startY)));
+          document.documentElement.style.setProperty('--city-pane-h', h + 'px');
+        }
+        function onUp() {
+          resizer.classList.remove('dragging');
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+        }
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+        e.preventDefault();
+      });
+    })();
+  </script>
+</body>
+
+</html>
