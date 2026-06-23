@@ -2,15 +2,6 @@
 <html lang="ja">
 
 <head>
-  <!-- Google tag (gtag.js) -->
-  <script async src="https://www.googletagmanager.com/gtag/js?id=G-WRX1SYCL8Q"></script>
-  <script>
-    window.dataLayer = window.dataLayer || [];
-    function gtag() { dataLayer.push(arguments); }
-    gtag('js', new Date());
-
-    gtag('config', 'G-WRX1SYCL8Q');
-  </script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>GPSトラッカー</title>
@@ -66,7 +57,6 @@
       z-index: 10;
       transition: background 0.15s;
     }
-
     #sidebar-resizer:hover,
     #sidebar-resizer.dragging {
       background: var(--border);
@@ -140,6 +130,28 @@
       color: #92400e;
       border-color: #c8900a;
       font-weight: 700;
+    }
+
+    .header-group {
+      display: flex;
+      align-items: center;
+      gap: 0;
+    }
+
+    .header-group .header-btn:last-child {
+      display: none;
+    }
+
+    .header-group.loaded .header-btn:first-child {
+      border-top-right-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+
+    .header-group.loaded .header-btn:last-child {
+      display: inline-flex;
+      border-top-left-radius: 0;
+      border-bottom-left-radius: 0;
+      border-left: none;
     }
 
     #locationDisplay {
@@ -511,7 +523,6 @@
       position: relative;
       border-top: 1px solid var(--border);
     }
-
     #city-resizer::after {
       content: '· · ·';
       position: absolute;
@@ -523,7 +534,6 @@
       letter-spacing: 3px;
       line-height: 1;
     }
-
     #city-resizer:hover,
     #city-resizer.dragging {
       background: var(--surface2);
@@ -959,11 +969,9 @@
       flex-shrink: 1;
       transition: border-color 0.18s;
     }
-
     #searchBox:focus-within {
       border-color: var(--accent);
     }
-
     #searchInput {
       background: transparent;
       border: none;
@@ -974,11 +982,9 @@
       outline: none;
       width: 190px;
     }
-
     #searchInput::placeholder {
       color: var(--text-muted);
     }
-
     #searchClear {
       background: none;
       border: none;
@@ -991,11 +997,9 @@
       opacity: 0.5;
       transition: opacity 0.15s;
     }
-
     #searchClear:hover {
       opacity: 1;
     }
-
     #searchBtn {
       background: none;
       border: none;
@@ -1008,7 +1012,6 @@
       transition: background 0.15s, color 0.15s;
       flex-shrink: 0;
     }
-
     #searchBtn:hover {
       background: var(--accent);
       color: #fff;
@@ -1036,12 +1039,18 @@
       <h1>軌跡マップ</h1>
       <label class="header-btn" for="folderInput">🗜 GPX ZIPを開く</label>
       <input type="file" id="folderInput" accept=".zip" style="display:none">
-      <label class="header-btn secondary" id="boundaryBtn" for="boundaryInput">🗺 境界データ読み込み</label>
-      <input type="file" id="boundaryInput" accept=".zip" multiple style="display:none">
-      <button class="header-btn secondary" id="boundaryClearBtn" style="display:none;padding:6px 9px"
-        title="読み込んだ境界データを全て削除" onclick="clearBoundaryData()">✕</button>
-      <label class="header-btn secondary" id="csvReportBtn" for="csvReportInput">📊 住所コード読み込み</label>
-      <input type="file" id="csvReportInput" accept=".csv" style="display:none">
+      <div class="header-group" id="boundaryGroup">
+        <label class="header-btn secondary" id="boundaryBtn" for="boundaryInput">🗺 境界データ読み込み</label>
+        <input type="file" id="boundaryInput" accept=".zip" multiple style="display:none">
+        <button class="header-btn secondary" id="boundaryClearBtn" style="padding:6px 9px"
+          title="境界データ読み込みをキャンセル" onclick="clearBoundaryData()">✕</button>
+      </div>
+      <div class="header-group" id="csvReportGroup">
+        <label class="header-btn secondary" id="csvReportBtn" for="csvReportInput">📊 住所コード読み込み</label>
+        <input type="file" id="csvReportInput" accept=".csv" style="display:none">
+        <button class="header-btn secondary" id="csvReportClearBtn" style="padding:6px 9px"
+          title="住所コード読み込みをキャンセル" onclick="clearCSVReport()">✕</button>
+      </div>
       <button class="header-btn secondary" id="aerialBtn" onclick="toggleAerial()">🛰 航空写真</button>
       <div id="searchBox">
         <input type="text" id="searchInput" placeholder="住所・郵便番号で検索" autocomplete="off">
@@ -1226,7 +1235,7 @@
         const [baseLat, baseLon] = coords[i];
         let end = i;
         while (end + 1 < coords.length &&
-          haversineKm(baseLat, baseLon, coords[end + 1][0], coords[end + 1][1]) < THRESH_KM) {
+               haversineKm(baseLat, baseLon, coords[end + 1][0], coords[end + 1][1]) < THRESH_KM) {
           end++;
         }
         if (end > i && coords[end][2] - coords[i][2] >= MIN_MS) {
@@ -1585,7 +1594,7 @@
           const _ms = _c0 && _c0.length ? _c0[0][2] : null;
           if (_ms) {
             const _d = new Date(_ms), _z = n => String(n).padStart(2, '0');
-            fname.textContent = `${_z(_d.getMonth() + 1)}/${_z(_d.getDate())} ${_z(_d.getHours())}:${_z(_d.getMinutes())}`;
+            fname.textContent = `${_z(_d.getMonth()+1)}/${_z(_d.getDate())} ${_z(_d.getHours())}:${_z(_d.getMinutes())}`;
           } else {
             fname.textContent = `端末${dev.num}`;
           }
@@ -1819,7 +1828,7 @@
 
         document.getElementById('boundarySection').style.display = 'flex';
         document.getElementById('city-resizer').style.display = 'block';
-        document.getElementById('boundaryClearBtn').style.display = 'inline-flex';
+        document.getElementById('boundaryGroup').classList.add('loaded');
 
         if (csvMode) {
           // CSVモード: 市区町村リストは表示せず町丁目フィルタを適用
@@ -1831,26 +1840,20 @@
           updateCityList();
         }
 
-        const prefLabel = loadedPrefCodes.size > 1 ? `${loadedPrefCodes.size}都道府県 / ` : '';
-        btn.innerHTML = `🗺 境界 ${prefLabel}${boundaryFeatureCount.toLocaleString()}件`;
+        btn.innerHTML = '🗺 境界データ読み込み';
         btn.classList.add('active');
       } catch (e) {
         console.error(e);
         alert(`シェイプファイルの読み込みに失敗しました。\n${e.message}`);
-        if (boundaryFeatureCount > 0) {
-          const prefLabel = loadedPrefCodes.size > 1 ? `${loadedPrefCodes.size}都道府県 / ` : '';
-          btn.innerHTML = `🗺 境界 ${prefLabel}${boundaryFeatureCount.toLocaleString()}件`;
-          btn.classList.add('active');
-        } else {
-          btn.innerHTML = '🗺 境界データ読み込み';
-        }
+        btn.innerHTML = '🗺 境界データ読み込み';
+        if (boundaryFeatureCount > 0) btn.classList.add('active');
       } finally {
         btn.style.pointerEvents = '';
       }
     }
 
     function clearBoundaryData() {
-      if (!confirm('読み込んだ境界データを全て削除しますか？')) return;
+      if (!confirm('境界データの読み込みをキャンセルしますか？')) return;
 
       Object.values(cityGroups).forEach(g => { if (map.hasLayer(g)) map.removeLayer(g); });
       Object.values(townLayers).forEach(g => { if (map.hasLayer(g)) map.removeLayer(g); });
@@ -1862,7 +1865,7 @@
 
       document.getElementById('boundarySection').style.display = 'none';
       document.getElementById('city-resizer').style.display = 'none';
-      document.getElementById('boundaryClearBtn').style.display = 'none';
+      document.getElementById('boundaryGroup').classList.remove('loaded');
 
       const btn = document.getElementById('boundaryBtn');
       btn.innerHTML = '🗺 境界データ読み込み';
@@ -1977,7 +1980,7 @@
       if (csvCode === keyCode) return true;
       if (keyCode.startsWith(csvCode)) return true;
       if (csvCode.length >= 5 && keyCode.length >= 5 &&
-        csvCode.slice(0, 5) === keyCode.slice(0, 5)) {
+          csvCode.slice(0, 5) === keyCode.slice(0, 5)) {
         return parseInt(csvCode.slice(5), 10) === parseInt(keyCode.slice(5), 10);
       }
       return false;
@@ -2045,7 +2048,8 @@
           updateTownList();
         }
 
-        btn.textContent = `📊 住所コード: ${towns.length}件`;
+        document.getElementById('csvReportGroup').classList.add('loaded');
+        btn.textContent = '📊 住所コード読み込み';
         btn.classList.add('active');
       } catch (e) {
         console.error(e);
@@ -2053,6 +2057,40 @@
         btn.textContent = '📊 住所コード読み込み';
       } finally {
         btn.style.pointerEvents = '';
+      }
+    }
+
+    function clearCSVReport() {
+      if (!confirm('住所コードの読み込みをキャンセルしますか？')) return;
+
+      Object.values(townLayers).forEach(g => { if (map.hasLayer(g)) map.removeLayer(g); });
+      townLayers = {};
+      csvTowns = [];
+      csvMode = false;
+      townFilterText = '';
+      townVisibility = {};
+
+      document.getElementById('csvReportGroup').classList.remove('loaded');
+      const btn = document.getElementById('csvReportBtn');
+      btn.textContent = '📊 住所コード読み込み';
+      btn.classList.remove('active');
+
+      // 境界（市区町村）表示に戻す
+      document.getElementById('boundarySectionTitle').textContent = '境界設定';
+      document.getElementById('cityFilterInput').placeholder = '市区町村で絞り込み';
+      document.getElementById('cityFilterInput').value = '';
+      cityFilterText = '';
+
+      if (Object.keys(cityGroups).length > 0) {
+        document.getElementById('boundarySection').style.display = 'flex';
+        document.getElementById('city-resizer').style.display = 'block';
+        Object.entries(cityGroups).forEach(([key, g]) => {
+          if (cityVisibility[key] && !map.hasLayer(g)) g.addTo(map);
+        });
+        updateCityList();
+      } else {
+        document.getElementById('boundarySection').style.display = 'none';
+        document.getElementById('city-resizer').style.display = 'none';
       }
     }
 
