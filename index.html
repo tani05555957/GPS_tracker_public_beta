@@ -2205,7 +2205,11 @@
       townVisibility[code] = show;
       const g = townLayers[code];
       if (!g) return;
-      if (show && !map.hasLayer(g)) g.addTo(map);
+      if (show && !map.hasLayer(g)) {
+        g.addTo(map);
+        const b = g.getBounds();
+        if (b.isValid()) map.fitBounds(b, { padding: [40, 40], maxZoom: 17, animate: false });
+      }
       else if (!show && map.hasLayer(g)) map.removeLayer(g);
       updateTownList();
     }
