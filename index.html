@@ -901,7 +901,7 @@
   <div id="app">
     <header id="header">
       <div class="logo">◈ GPS TRACKER</div>
-      <h1>ver.3.0</h1>
+      <h1>ver.3.1</h1>
       <div class="header-group" id="trackGroup">
         <label class="header-btn" id="trackBtn" for="folderInput"
           title="GPXを含むZIP、または配布データCSV（日付・端末・GPS列）を読み込みます。複数選択・追加読込に対応">🗜 GPXデータを開く</label>
@@ -1198,15 +1198,27 @@
     }
 
     // ===== GPXパーサ (タイムスタンプ込み) =====
+    // 同じ時刻の記録が連続する場合は1件目のみ採用する（一部端末機種の重複記録対策）
+    // <trk><name>氏名 root_no: 端末番号</name></trk> 形式（plusGPS等）にも対応し、trackNameとして返す
     function parseGPX(xmlText) {
       const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
-      return Array.from(doc.querySelectorAll('trkpt')).map(pt => {
+      const pts = Array.from(doc.querySelectorAll('trkpt')).map(pt => {
         const lat = parseFloat(pt.getAttribute('lat'));
         const lon = parseFloat(pt.getAttribute('lon'));
         const timeEl = pt.querySelector('time');
         const t = timeEl ? new Date(timeEl.textContent.trim()).getTime() : 0;
         return [lat, lon, t];
       }).filter(([lat, lon]) => !isNaN(lat) && !isNaN(lon));
+      const result = [];
+      let lastT = null;
+      for (const p of pts) {
+        if (result.length && p[2] === lastT) continue;
+        result.push(p);
+        lastT = p[2];
+      }
+      const nameEl = doc.querySelector('trk > name');
+      const trackName = nameEl ? nameEl.textContent.trim() : '';
+      return { coords: result, trackName };
     }
 
     // ===== ファイル名解析 =====
@@ -1243,8 +1255,20 @@
     // GPXソース1件 → {num, model, company, coords, noData}
     // 座標が1件も取れない場合（trksegが空など）もエラーにせず、noData:trueの端末として返す
     async function parseGPXSource(name, text) {
-      const coords = parseGPX(text);
-      const { num, model, company } = parseFilename(name);
+      const { coords, trackName } = parseGPX(text);
+      let { num, model, company } = parseFilename(name);
+      let rawLabel;
+      // <name>氏名 root_no: 端末番号</name> 形式の場合は氏名・端末番号をトグル表示に使用
+      const rootNoMatch = /^(.*?)\s*root_no\s*[:：]\s*(\S+)$/i.exec(trackName);
+      if (rootNoMatch) {
+        const personName = rootNoMatch[1].trim();
+        const rootNo = rootNoMatch[2].trim();
+        company = personName;
+        model = rootNo;
+        rawLabel = `${personName} ${rootNo}`;
+        const n = parseInt(rootNo, 10);
+        if (!isNaN(n)) num = n;
+      }
       // 重複読込判定用の日付キー(YYYYMMDD)：座標があれば最初の点の日付、無ければファイル名先頭の日付らしき8桁から推測
       let dateKey = '';
       if (coords.length) {
@@ -1254,7 +1278,7 @@
         const m = /^(\d{8})/.exec(name);
         if (m) dateKey = m[1];
       }
-      return { num, model, company, coords, noData: !coords.length, dateKey };
+      return { num, model, company, coords, noData: !coords.length, dateKey, rawLabel };
     }
 
     // ===== レイヤー管理 =====
