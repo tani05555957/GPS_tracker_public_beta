@@ -901,7 +901,7 @@
   <div id="app">
     <header id="header">
       <div class="logo">◈ GPS TRACKER</div>
-      <h1>ver.3.1</h1>
+      <h1>ver.3.2</h1>
       <div class="header-group" id="trackGroup">
         <label class="header-btn" id="trackBtn" for="folderInput"
           title="GPXを含むZIP、または配布データCSV（日付・端末・GPS列）を読み込みます。複数選択・追加読込に対応">🗜 GPXデータを開く</label>
@@ -916,8 +916,8 @@
           onclick="clearBoundaryData()">✕</button>
       </div>
       <div class="header-group" id="csvReportGroup">
-        <label class="header-btn secondary" id="csvReportBtn" for="csvReportInput">📊 住所コード読み込み</label>
-        <input type="file" id="csvReportInput" accept=".csv" style="display:none">
+        <label class="header-btn secondary" id="csvReportBtn" for="csvReportInput" title="複数選択・追加読込に対応">📊 住所コード読み込み</label>
+        <input type="file" id="csvReportInput" accept=".csv" multiple style="display:none">
         <button class="header-btn secondary" id="csvReportClearBtn" style="padding:6px 9px" title="住所コード読み込みをキャンセル"
           onclick="clearCSVReport()">✕</button>
       </div>
@@ -1874,8 +1874,12 @@
 
     // ===== CSVレポート =====
     document.getElementById('csvReportInput').addEventListener('change', async function () {
-      if (this.files.length) await loadCSVReport(this.files[0]);
+      const files = Array.from(this.files);
       this.value = '';
+      if (!files.length) return;
+      for (const file of files) {
+        await loadCSVReport(file);
+      }
     });
 
     // ===== 境界シェイプファイル =====
@@ -2068,16 +2072,19 @@
 
       const el = document.getElementById('cityList');
       el.innerHTML = '';
-      const q = cityFilterText.toLowerCase();
+      const q = cityFilterText.toLowerCase().replace(/\s+/g, '');
       const showPref = loadedPrefCodes.size > 1;
       Object.keys(cityGroups)
         .map(key => {
-          const prefName = showPref ? (PREF_NAMES[cityPrefCodes[key]] || '') : '';
-          const label = prefName ? `${prefName} ${cityNames[key] || key}` : (cityNames[key] || key);
-          return { key, label };
+          const prefNameFull = PREF_NAMES[cityPrefCodes[key]] || '';
+          const cityName = cityNames[key] || key;
+          const prefName = showPref ? prefNameFull : '';
+          const label = prefName ? `${prefName} ${cityName}` : cityName;
+          const searchText = (prefNameFull + cityName).toLowerCase().replace(/\s+/g, '');
+          return { key, label, searchText };
         })
         .sort((a, b) => (cityCodes[a.key] || a.key).localeCompare(cityCodes[b.key] || b.key))
-        .filter(({ label }) => !q || label.toLowerCase().includes(q))
+        .filter(({ searchText }) => !q || searchText.includes(q))
         .forEach(({ key, label }) => {
           const on = cityVisibility[key];
           const setai = citySetai[key] || 0;
@@ -2182,7 +2189,8 @@
         const lines = text.split(/\r?\n/);
         if (lines.length < 2) throw new Error('データが見つかりません');
 
-        const towns = [];
+        const existingCodes = new Set(csvTowns.map(t => t.code));
+        const newTowns = [];
         const seenCodes = new Set();
         for (let i = 1; i < lines.length; i++) {
           const line = lines[i].trim();
@@ -2194,24 +2202,25 @@
           const townName = (cols[4] || '').trim();
           const statHouseholds = parseInt((cols[5] || '').replace(/,/g, ''), 10) || 0;
           const deliveryHouseholds = parseInt((cols[6] || '').replace(/,/g, ''), 10) || 0;
-          if (code && /^\d+$/.test(code) && !seenCodes.has(code)) {
+          if (code && /^\d+$/.test(code) && !seenCodes.has(code) && !existingCodes.has(code)) {
             seenCodes.add(code);
-            towns.push({ code, prefName, cityName, townName, statHouseholds, deliveryHouseholds });
+            newTowns.push({ code, prefName, cityName, townName, statHouseholds, deliveryHouseholds });
           }
         }
-        if (!towns.length) throw new Error('有効な住所コードが見つかりません');
+        if (!newTowns.length && !csvTowns.length) throw new Error('有効な住所コードが見つかりません');
 
-        // 既存の町丁目レイヤーをクリア
-        Object.values(townLayers).forEach(g => { if (map.hasLayer(g)) map.removeLayer(g); });
-        // 市区町村レイヤーを非表示
-        Object.values(cityGroups).forEach(g => { if (map.hasLayer(g)) map.removeLayer(g); });
+        if (!csvMode) {
+          // 既存の町丁目レイヤーをクリア
+          Object.values(townLayers).forEach(g => { if (map.hasLayer(g)) map.removeLayer(g); });
+          // 市区町村レイヤーを非表示
+          Object.values(cityGroups).forEach(g => { if (map.hasLayer(g)) map.removeLayer(g); });
+          townLayers = {};
+        }
 
-        csvTowns = towns;
+        csvTowns = csvTowns.concat(newTowns);
         csvMode = true;
-        townLayers = {};
         townFilterText = '';
-        townVisibility = {};
-        csvTowns.forEach(t => { townVisibility[t.code] = true; });
+        newTowns.forEach(t => { townVisibility[t.code] = true; });
 
         // UIをCSVモードに切り替え
         document.getElementById('boundarySectionTitle').textContent = '住所コード';
@@ -2329,10 +2338,12 @@
       const matchedCount = csvTowns.filter(t => townLayers[t.code]).length;
       document.getElementById('cityCount').textContent = `${matchedCount}/${csvTowns.length}件`;
 
-      const q = townFilterText.toLowerCase();
-      const filtered = csvTowns.filter(t =>
-        !q || t.townName.toLowerCase().includes(q) || t.cityName.toLowerCase().includes(q)
-      );
+      const q = townFilterText.toLowerCase().replace(/\s+/g, '');
+      const filtered = csvTowns.filter(t => {
+        if (!q) return true;
+        const searchText = `${t.prefName}${t.cityName}${t.townName}`.toLowerCase().replace(/\s+/g, '');
+        return searchText.includes(q);
+      });
 
       filtered.forEach(town => {
         const hasLayer = !!townLayers[town.code];
