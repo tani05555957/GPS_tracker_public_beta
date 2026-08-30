@@ -641,6 +641,19 @@
       flex-shrink: 0;
     }
 
+    #cityListHeader .h-stat.sortable {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    #cityListHeader .h-stat.sortable:hover {
+      color: var(--text);
+    }
+
+    #cityListHeader .h-stat.sort-active {
+      color: var(--accent);
+    }
+
     .city-row.grayed {
       opacity: 0.42;
       pointer-events: none;
@@ -1263,8 +1276,8 @@
   <div id="colPickModal">
     <div class="cp-card">
       <div class="cp-header">
-        <div class="cp-title">配布数の列を選択してください</div>
-        <div class="cp-desc">CSVから「配布数」の列を自動判別できませんでした。該当する列をクリックして選択してください。</div>
+        <div class="cp-title" id="colPickTitle">配布数の列を選択してください</div>
+        <div class="cp-desc" id="colPickDesc">CSVから「配布数」の列を自動判別できませんでした。該当する列をクリックして選択してください。</div>
       </div>
       <div class="cp-list" id="colPickList"></div>
       <div class="cp-footer">
@@ -1295,7 +1308,7 @@
     <header id="header">
       <div class="header-row" id="headerRow1">
         <div class="logo">◈ GPS TRACKER</div>
-        <h1>ver.5.0</h1>
+        <h1>ver.5.1</h1>
         <div class="header-group" id="trackGroup">
           <label class="header-btn" id="trackBtn" for="folderInput"
             title="GPXを含むZIP、配布データCSV（日付・端末・GPS列）、ITM（トレッキングマップ）、JSON（ロガー）ファイルを読み込みます。複数選択・追加読込に対応">🗜 GPXデータを開く</label>
@@ -1474,6 +1487,8 @@
     let townLayers = {};          // code → L.GeoJSON
     let townVisibility = {};      // code → bool
     let townFilterText = '';
+    let townSortKey = null;  // null(既定=充足率昇順) | 'households' | 'distCount' | 'estVisits' | 'rate'
+    let townSortDir = 'asc'; // 'asc' | 'desc'（住所コード一覧のタイトル行クリックでのソート用）
     let csvMode = false;
     let csvBoundaryFetchInProgress = false; // 住所コードCSV由来の境界データ自動取得（index+ジオメトリ）が進行中か。
                                              // 取得完了前にupdateTownListが呼ばれても「失敗」と誤表示しないための判定に使う
@@ -3514,7 +3529,7 @@
         const townCode = String(p.KEY_CODE || p.KEYCODE || '').trim();
         if (label && !anyTrackVisible()) {
           _balloonLocked = true;
-          showBalloon(null, label, boundaryFeatureStatDetail(townCode), e.originalEvent.clientX, e.originalEvent.clientY, 'cursor', true);
+          showBalloon(null, boundaryBalloonLabel(townCode, label), boundaryFeatureStatDetail(townCode), e.originalEvent.clientX, e.originalEvent.clientY, 'cursor', true, true);
         }
         lyr.setStyle({ fillOpacity: Math.min(1, cityFillOpacity + 0.25), weight: 2.5 });
       });
@@ -3524,7 +3539,7 @@
         const label = labelOf(p);
         if (!label || anyTrackVisible()) return;
         const townCode = String(p.KEY_CODE || p.KEYCODE || '').trim();
-        showBalloon(null, label, boundaryFeatureStatDetail(townCode), e.originalEvent.clientX, e.originalEvent.clientY, 'cursor', true);
+        showBalloon(null, boundaryBalloonLabel(townCode, label), boundaryFeatureStatDetail(townCode), e.originalEvent.clientX, e.originalEvent.clientY, 'cursor', true, true);
       });
       layer.on('mouseout', e => {
         const lyr = e.layer;
@@ -3592,9 +3607,8 @@
             if (matchedCode !== null) {
               const visits = Math.round(townVisitUnits[matchedCode] || 0);
               const distCount = town.distributionCount || 0;
-              // 統計上世帯数は住所コードデータの列ではなく、境界shapefileのSETAIプロパティから取得する
-              // （住所コードデータに世帯数の列が無くても表示できるようにするため）
-              const households = townSetaiByCode[matchedCode] || 0;
+              // 統計上世帯数は住所コードデータの列があればそれを優先し、無ければ境界データのSETAIにフォールバックする
+              const households = town.statHouseholds > 0 ? town.statHouseholds : (townSetaiByCode[matchedCode] || 0);
               // ユーザー合意事項: 配布率は100%でキャップせず実数のまま保持・表示する
               // CSVの配布数（実績）が無い場合は世帯数按分による割合にフォールバックする
               const rate = distCount > 0
@@ -3689,37 +3703,59 @@
       return false;
     }
 
-    // 「配布数」列は住所コード等の固定列（1〜5）と異なりCSVごとに位置が変わりうるため、
-    // ヘッダー名から自動判別できない場合はユーザーに列を選ばせる
-    const CSV_FIXED_COL_INDEXES = [1, 2, 3, 4, 5]; // code, prefName, cityName, townName, (旧統計上世帯数列、現在は境界データのSETAIを参照するため未使用)
+    // 住所コード列・配布数列はCSVごとに位置が変わりうるため、ヘッダー名から自動判別する。
+    // 自動判別できない場合はユーザーに列を選ばせる
     const CSV_PICK_CANCELLED = Symbol('csv-pick-cancelled');
 
-    function autoDetectDistributionColIdx(headerCols) {
-      // 列名が完全に「配布数」と一致する列があれば最優先で採用する
+    // ヘッダー行から住所コード列を探す。「KEY_CODE」列があれば最優先、無ければ「住所コード」という文字列を
+    // 含む列（「KEY_CODE_住所コード」等も含む）が1つだけならそれを採用する。候補が複数ある場合、または
+    // 見つからない場合は呼び出し側でユーザーに選ばせる
+    function detectCodeColIdx(headerCols) {
       for (let idx = 0; idx < headerCols.length; idx++) {
-        if (CSV_FIXED_COL_INDEXES.includes(idx)) continue;
-        if ((headerCols[idx] || '').trim() === '配布数') return idx;
+        if ((headerCols[idx] || '').trim() === 'KEY_CODE') return idx;
       }
       const candidates = [];
       headerCols.forEach((h, idx) => {
-        if (CSV_FIXED_COL_INDEXES.includes(idx)) return;
-        const name = (h || '').trim();
-        if (name && name.includes('配布') && !name.includes('率')) candidates.push(idx);
+        if ((h || '').trim().includes('住所コード')) candidates.push(idx);
       });
       return candidates.length === 1 ? candidates[0] : -1;
     }
 
-    // 配布数列をユーザーに選択させるモーダルを表示し、選択された列インデックスを返す
-    // （キャンセル時はCSV_PICK_CANCELLEDをthrow）
-    function pickDistributionColumn(headerCols, sampleCols) {
+    // ヘッダー行から統計上世帯数列を探す。「統計上世帯数」という文字列を含む列（「KEY_CODE_統計上世帯数」等
+    // も含む）が1つだけならそれを採用する。候補が複数ある場合、または見つからない場合は呼び出し側で
+    // ユーザーに選ばせる（境界データのSETAIへのフォールバックも呼び出し側の責任）
+    function detectStatHouseholdsColIdx(headerCols) {
+      const candidates = [];
+      headerCols.forEach((h, idx) => {
+        if ((h || '').trim().includes('統計上世帯数')) candidates.push(idx);
+      });
+      return candidates.length === 1 ? candidates[0] : -1;
+    }
+
+    // ヘッダー名に「配布数」という文字列を含む列を探す。1列だけ見つかればそれを採用する
+    function autoDetectDistributionColIdx(headerCols, excludeIndexes) {
+      const candidates = [];
+      headerCols.forEach((h, idx) => {
+        if (excludeIndexes.includes(idx)) return;
+        const name = (h || '').trim();
+        if (name.includes('配布数')) candidates.push(idx);
+      });
+      return candidates.length === 1 ? candidates[0] : -1;
+    }
+
+    // 列をユーザーに選択させるモーダルを表示し、選択された列インデックスを返す
+    // （キャンセル時はCSV_PICK_CANCELLEDをthrow）。noneLabelを指定すると「該当列は無い」（-1）も選べる
+    function pickColumn(headerCols, sampleCols, { title, desc, excludeIndexes = [], noneLabel = null }) {
       return new Promise((resolve, reject) => {
         const modal = document.getElementById('colPickModal');
         const list = document.getElementById('colPickList');
         const cancelBtn = document.getElementById('colPickCancelBtn');
+        document.getElementById('colPickTitle').textContent = title;
+        document.getElementById('colPickDesc').textContent = desc;
         list.innerHTML = '';
 
         headerCols.forEach((h, idx) => {
-          if (CSV_FIXED_COL_INDEXES.includes(idx)) return;
+          if (excludeIndexes.includes(idx)) return;
           const name = (h || '').trim();
           const sample = (sampleCols[idx] || '').trim();
           if (!name && !sample) return;
@@ -3733,11 +3769,13 @@
           list.appendChild(row);
         });
 
-        const noneRow = document.createElement('div');
-        noneRow.className = 'cp-row cp-none';
-        noneRow.textContent = '配布数の列は無い（0件として扱う）';
-        noneRow.addEventListener('click', () => { cleanup(); resolve(-1); });
-        list.appendChild(noneRow);
+        if (noneLabel) {
+          const noneRow = document.createElement('div');
+          noneRow.className = 'cp-row cp-none';
+          noneRow.textContent = noneLabel;
+          noneRow.addEventListener('click', () => { cleanup(); resolve(-1); });
+          list.appendChild(noneRow);
+        }
 
         function onCancel() { cleanup(); reject(CSV_PICK_CANCELLED); }
         function cleanup() {
@@ -3769,11 +3807,50 @@
 
         const headerCols = parseCSVLine(lines[0]);
         const firstDataCols = parseCSVLine(lines[1]);
-        let distColIdx = autoDetectDistributionColIdx(headerCols);
-        if (distColIdx === -1 && headerCols.length > CSV_FIXED_COL_INDEXES.length + 1) {
+
+        // 住所コード列を判定する。「KEY_CODE」列があれば最優先、無ければ「住所コード」列、
+        // それも無ければユーザーに列を選ばせる
+        let codeColIdx = detectCodeColIdx(headerCols);
+        if (codeColIdx === -1) {
+          try {
+            codeColIdx = await pickColumn(headerCols, firstDataCols, {
+              title: '住所コードの列を選択してください',
+              desc: 'CSVから住所コード（KEY_CODE）の列を自動判別できませんでした。該当する列をクリックして選択してください。',
+            });
+          } catch (e) {
+            if (e === CSV_PICK_CANCELLED) { btn.textContent = '📊 住所コード読み込み'; return; }
+            throw e;
+          }
+        }
+
+        // 統計上世帯数列を判定する。「統計上世帯数」列があれば最優先、無ければユーザーに列を選ばせる
+        // （「列は無い」を選んだ場合は境界データのSETAIにフォールバックする、従来どおりの挙動）
+        let statHouseholdsColIdx = detectStatHouseholdsColIdx(headerCols);
+        if (statHouseholdsColIdx === -1) {
+          try {
+            statHouseholdsColIdx = await pickColumn(headerCols, firstDataCols, {
+              title: '統計上世帯数の列を選択してください',
+              desc: 'CSVから「統計上世帯数」の列を自動判別できませんでした。該当する列をクリックして選択してください。',
+              excludeIndexes: [codeColIdx, 2, 3, 4],
+              noneLabel: '統計上世帯数の列は無い（境界データの世帯数を使用）',
+            });
+          } catch (e) {
+            if (e === CSV_PICK_CANCELLED) { btn.textContent = '📊 住所コード読み込み'; return; }
+            throw e;
+          }
+        }
+
+        const fixedColIndexes = [codeColIdx, statHouseholdsColIdx, 2, 3, 4].filter(i => i >= 0); // 住所コード, 統計上世帯数, prefName, cityName, townName
+        let distColIdx = autoDetectDistributionColIdx(headerCols, fixedColIndexes);
+        if (distColIdx === -1 && headerCols.length > fixedColIndexes.length + 1) {
           // 自動判別できず、かつ配布数らしき候補列が存在しうる場合のみ選択を求める
           try {
-            distColIdx = await pickDistributionColumn(headerCols, firstDataCols);
+            distColIdx = await pickColumn(headerCols, firstDataCols, {
+              title: '配布数の列を選択してください',
+              desc: 'CSVから「配布数」の列を自動判別できませんでした。該当する列をクリックして選択してください。',
+              excludeIndexes: fixedColIndexes,
+              noneLabel: '配布数の列は無い（0件として扱う）',
+            });
           } catch (e) {
             if (e === CSV_PICK_CANCELLED) { btn.textContent = '📊 住所コード読み込み'; return; }
             throw e;
@@ -3786,14 +3863,15 @@
         const seenCodes = new Set();
         for (let i = 1; i < lines.length; i++) {
           const cols = parseCSVLine(lines[i]);
-          const code = (cols[1] || '').trim();
+          const code = (cols[codeColIdx] || '').trim();
           const prefName = (cols[2] || '').trim();
           const cityName = (cols[3] || '').trim();
           const townName = (cols[4] || '').trim();
           const distributionCount = distColIdx >= 0 ? (parseInt((cols[distColIdx] || '').replace(/,/g, ''), 10) || 0) : 0;
+          const statHouseholds = statHouseholdsColIdx >= 0 ? (parseInt((cols[statHouseholdsColIdx] || '').replace(/,/g, ''), 10) || 0) : 0;
           if (code && /^\d+$/.test(code) && !seenCodes.has(code) && !existingCodes.has(code)) {
             seenCodes.add(code);
-            newTowns.push({ code, prefName, cityName, townName, distributionCount });
+            newTowns.push({ code, prefName, cityName, townName, distributionCount, statHouseholds });
           }
         }
         if (!newTowns.length && !csvTowns.length) throw new Error('有効な住所コードが見つかりません');
@@ -3918,7 +3996,7 @@
           const label = labelOf(lyr.feature?.properties || {});
           if (label && !anyTrackVisible()) {
             _balloonLocked = true;
-            showBalloon(null, label, boundaryFeatureStatDetail(town.code), e.originalEvent.clientX, e.originalEvent.clientY, 'cursor', true);
+            showBalloon(null, boundaryBalloonLabel(town.code, label), boundaryFeatureStatDetail(town.code), e.originalEvent.clientX, e.originalEvent.clientY, 'cursor', true, true);
           }
           lyr.setStyle({ fillOpacity: Math.min(1, cityFillOpacity + 0.25), weight: 2.5 });
         });
@@ -3926,7 +4004,7 @@
           const lyr = e.layer;
           const label = labelOf(lyr.feature?.properties || {});
           if (!label || anyTrackVisible()) return;
-          showBalloon(null, label, boundaryFeatureStatDetail(town.code), e.originalEvent.clientX, e.originalEvent.clientY, 'cursor', true);
+          showBalloon(null, boundaryBalloonLabel(town.code, label), boundaryFeatureStatDetail(town.code), e.originalEvent.clientX, e.originalEvent.clientY, 'cursor', true, true);
         });
         layer.on('mouseout', e => {
           const lyr = e.layer;
@@ -3944,19 +4022,49 @@
       updateTownList();
     }
 
+    // 住所コード一覧の統計列の並べ替え値を返す（データ無しはnull＝常に末尾）
+    function townSortValue(town, key) {
+      const ms = townDeliveryStats[town.code];
+      const hasHouseholds = ms && ms.households > 0;
+      switch (key) {
+        case 'households': return hasHouseholds ? ms.households : null;
+        case 'distCount': return town.distributionCount > 0 ? town.distributionCount : null;
+        case 'estVisits': return hasHouseholds ? ms.visits : null;
+        case 'rate': return hasHouseholds ? ms.rate : null;
+        default: return null;
+      }
+    }
+
     function updateTownList() {
       const hdr = document.getElementById('cityListHeader');
       const el = document.getElementById('cityList');
       el.innerHTML = '';
 
       const showStats = boundaryFeatureCount > 0;
+      const sortArrow = key => townSortKey === key ? (townSortDir === 'asc' ? ' ▲' : ' ▼') : '';
+      const sortCls = key => 'h-stat sortable' + (townSortKey === key ? ' sort-active' : '');
       hdr.innerHTML =
         '<div class="h-toggle"></div>' +
         '<span class="h-name">町丁目名</span>' +
-        '<span class="h-stat">統計上<br>世帯数</span>' +
-        '<span class="h-stat">配布数<br>(実績)</span>' +
-        (showStats ? '<span class="h-stat">推定<br>配布数</span><span class="h-stat">充足<br>率</span>' : '');
+        `<span class="${sortCls('households')}" data-sort="households">統計上<br>世帯数${sortArrow('households')}</span>` +
+        `<span class="${sortCls('distCount')}" data-sort="distCount">配布数<br>(実績)${sortArrow('distCount')}</span>` +
+        (showStats
+          ? `<span class="${sortCls('estVisits')}" data-sort="estVisits">推定<br>配布数${sortArrow('estVisits')}</span>` +
+            `<span class="${sortCls('rate')}" data-sort="rate">充足<br>率${sortArrow('rate')}</span>`
+          : '');
       hdr.style.display = 'flex';
+      hdr.querySelectorAll('.h-stat.sortable').forEach(hstat => {
+        hstat.addEventListener('click', () => {
+          const key = hstat.dataset.sort;
+          if (townSortKey === key) {
+            townSortDir = townSortDir === 'asc' ? 'desc' : 'asc';
+          } else {
+            townSortKey = key;
+            townSortDir = 'asc';
+          }
+          updateTownList();
+        });
+      });
 
       if (Object.keys(allFeaturesByCode).length === 0) {
         el.innerHTML = csvBoundaryFetchInProgress
@@ -3973,12 +4081,22 @@
       const q = townFilterText.toLowerCase().replace(/\s+/g, '');
       const filtered = csvTowns.filter(t => townMatchesFilter(t, q));
 
-      if (showStats && Object.keys(townDeliveryStats).length) {
-        // 配布率の低い順（未計算・統計上世帯数0の町丁目は末尾）に並べ替える
+      if (townSortKey) {
+        // タイトル行クリックによる明示的な並べ替え（データ無しは常に末尾）
+        const dir = townSortDir === 'asc' ? 1 : -1;
         filtered.sort((a, b) => {
-          const sa = townDeliveryStats[a.code], sb = townDeliveryStats[b.code];
-          const ra = (sa && sa.households > 0) ? sa.rate : null;
-          const rb = (sb && sb.households > 0) ? sb.rate : null;
+          const va = townSortValue(a, townSortKey);
+          const vb = townSortValue(b, townSortKey);
+          if (va == null && vb == null) return 0;
+          if (va == null) return 1;
+          if (vb == null) return -1;
+          return (va - vb) * dir;
+        });
+      } else if (showStats && Object.keys(townDeliveryStats).length) {
+        // 既定: 充足率の低い順（未計算・統計上世帯数0の町丁目は末尾）に並べ替える
+        filtered.sort((a, b) => {
+          const ra = townSortValue(a, 'rate');
+          const rb = townSortValue(b, 'rate');
           if (ra == null && rb == null) return 0;
           if (ra == null) return 1;
           if (rb == null) return -1;
@@ -4007,7 +4125,7 @@
 
         const st = document.createElement('span');
         st.className = 'city-stat';
-        st.title = '統計上世帯数（境界データのSETAIを参照）';
+        st.title = '統計上世帯数（CSVの列があればそれ、無ければ境界データのSETAIを参照）';
         st.textContent = ms && ms.households > 0 ? ms.households.toLocaleString() : '—';
 
         const dl = document.createElement('span');
@@ -4153,16 +4271,24 @@
 
     // color: 端末色（nullなら無着色）, detailHtml: 2行目（空文字なら非表示）
     // subtle: trueなら控えめな見た目にする（境界ポリゴンの町字名など、あくまで参考情報の表示用）
-    function showBalloon(color, label, detailHtml, x, y, anchor, subtle) {
+    // labelHtml=trueの場合のみlabelをHTMLとして描画する（境界ポリゴンのKEY_CODE併記用。
+    // GPX軌跡側の会社名等（外部データ由来）は従来どおりtextContentで安全に描画する）
+    function showBalloon(color, label, detailHtml, x, y, anchor, subtle, labelHtml) {
       // カーソルが地図上端付近にあると吹き出しがヘッダーに重なってしまうため表示しない
       const mapTop = map.getContainer().getBoundingClientRect().top;
       if (y - mapTop < MAP_TOP_MARGIN) { hoverTip.style.display = 'none'; return; }
       hoverTip.classList.toggle('ht-subtle', !!subtle);
       htLabel.style.color = color || '';
-      htLabel.textContent = label;
+      if (labelHtml) htLabel.innerHTML = label; else htLabel.textContent = label;
       htTime.innerHTML = detailHtml || '';
       htTime.style.display = detailHtml ? '' : 'none';
       positionBalloon(x, y, anchor);
+    }
+
+    // 境界ポリゴンのホバー吹き出し用ラベル: 上段にKEY_CODE（小さめ・淡色）、下段に町丁目名を表示する
+    function boundaryBalloonLabel(code, name) {
+      if (!name) return '';
+      return code ? `<span style="font-size:9px;color:var(--text-muted)">${code}</span><br>${name}` : name;
     }
 
     function hideBalloon() {
@@ -5000,7 +5126,7 @@
   <!-- Service Worker登録 -->
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/GPS_tracker_public_beta/sw.js');
+      navigator.serviceWorker.register('sw.js');
     }
   </script>
 </body>
