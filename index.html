@@ -3690,16 +3690,20 @@
       return cols;
     }
 
+    // 住所コードは市区町村(5桁)・町字(9桁)・丁目等(11桁)の3種類。北海道〜栃木県（都道府県コード01〜09）は
+    // Excel等で数値として扱われると先頭のゼロが落ち、それぞれ4桁・8桁・10桁になっていることがあるため、
+    // その場合は先頭に0を1つ補って正規化する
+    function normalizeAddressCode(code) {
+      if (code.length === 4 || code.length === 8 || code.length === 10) return '0' + code;
+      return code;
+    }
+
     function matchCode(csvCode, keyCode) {
-      csvCode = String(csvCode).trim();
+      csvCode = normalizeAddressCode(String(csvCode).trim());
       keyCode = String(keyCode || '').trim();
       if (!csvCode || !keyCode) return false;
       if (csvCode === keyCode) return true;
       if (keyCode.startsWith(csvCode)) return true;
-      if (csvCode.length >= 5 && keyCode.length >= 5 &&
-        csvCode.slice(0, 5) === keyCode.slice(0, 5)) {
-        return parseInt(csvCode.slice(5), 10) === parseInt(keyCode.slice(5), 10);
-      }
       return false;
     }
 
