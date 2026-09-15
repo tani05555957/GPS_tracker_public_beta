@@ -19,6 +19,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+  <script src="https://unpkg.com/@geolonia/normalize-japanese-addresses@3.1.3/dist/main-umd.cjs"></script>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Space+Mono:wght@400;700&display=swap');
 
@@ -1192,6 +1193,7 @@
       overflow: hidden;
       flex-shrink: 1;
       transition: border-color 0.18s;
+      position: relative;
     }
 
     #searchBox:focus-within {
@@ -1206,11 +1208,41 @@
       color: var(--text);
       font-family: 'Noto Sans JP', sans-serif;
       outline: none;
-      width: 190px;
+      width: var(--search-input-w, 190px);
     }
 
     #searchInput::placeholder {
       color: var(--text-muted);
+    }
+
+    /* 通常時は完全に見えないヒットエリア。検索欄右縁にマウスオーバーした時だけ
+       伸縮カーソル（ew-resize）＋淡いアクセント色の縦線を表示する */
+    #search-resizer {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      right: 0;
+      width: 6px;
+      cursor: ew-resize;
+      z-index: 5;
+    }
+
+    #search-resizer::after {
+      content: '';
+      position: absolute;
+      top: 15%;
+      bottom: 15%;
+      right: 1px;
+      width: 2px;
+      border-radius: 1px;
+      background: var(--accent);
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+
+    #search-resizer:hover::after,
+    #search-resizer.dragging::after {
+      opacity: 0.6;
     }
 
     #searchClear {
@@ -1308,7 +1340,7 @@
     <header id="header">
       <div class="header-row" id="headerRow1">
         <div class="logo">◈ GPS TRACKER</div>
-        <h1>ver.5.1</h1>
+        <h1>ver.5.2</h1>
         <div class="header-group" id="trackGroup">
           <label class="header-btn" id="trackBtn" for="folderInput"
             title="GPXを含むZIP、配布データCSV（日付・端末・GPS列）、ITM（トレッキングマップ）、JSON（ロガー）ファイルを読み込みます。複数選択・追加読込に対応">🗜 GPXデータを開く</label>
@@ -1327,6 +1359,7 @@
           <input type="text" id="searchInput" placeholder="住所・郵便番号で検索" autocomplete="off">
           <button id="searchClear" title="消去">✕</button>
           <button id="searchBtn" title="検索">🔍</button>
+          <div id="search-resizer" title="ドラッグして検索欄の幅を調整"></div>
         </div>
         <div id="locationDisplay">—</div>
       </div>
@@ -2038,6 +2071,17 @@
         className: '',
         iconSize: [size, size],
         iconAnchor: [size / 2, size / 2],
+      });
+    }
+
+    // 住所検索で番地・号までピンポイント特定できた地点に立てる目印（町丁目までの検索では表示しない）
+    let searchPinMarker = null;
+    function mkPlusIcon() {
+      return L.divIcon({
+        html: `<div style="width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:#8b1c1c;text-shadow:0 0 2px #fff,0 0 2px #fff,0 0 3px #fff,0 0 3px #fff;line-height:1">+</div>`,
+        className: '',
+        iconSize: [20, 20],
+        iconAnchor: [10, 10],
       });
     }
 
@@ -4474,12 +4518,142 @@
     }
 
     // ===== 住所検索 =====
+    // Nominatimは日本国内の番地・号レベルの住所検索に弱いため、Geoloniaの住所正規化ライブラリ
+    // （normalize-japanese-addresses）で都道府県・市区町村・町丁目・番地/号を正規化し、
+    // 正規化しきれず残った番地・号相当の文字列があれば国土地理院住所検索APIで補完ジオコーディングする。
+    // 行政区域名やランドマーク名の検索（Geoloniaで都道府県すら一致しない場合）は
+    // 従来通りNominatimの結果を使う（境界データの自動読込・広域のboundingboxズームも従来通り）。
+
+    // 2地点間の距離（km、Haversine）。国土地理院APIの複数候補が「同一地点の別表記」か
+    // 「全国に散らばる別の場所」かを見分けるために使う
+    function haversineKm(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+      return 2 * R * Math.asin(Math.sqrt(a));
+    }
+
+    // 国土地理院住所検索APIへ問い合わせる。「虎ノ門1」「松戸新田404」のように市区町村名を
+    // 省略した入力や、丁目を「一丁目」ではなく素の数字だけで書いた入力もこのAPI自体が解釈できる。
+    // 複数候補が返る場合、同一地点の別表記（dataSourceが違うだけ等）であれば1件に絞り込み、
+    // 全国の別の市区町村にまたがる本当の同名重複であれば ambiguous として区別する。
+    // 候補タイトルの末尾（地名部分より後ろ）が番地・丁目相当の記号だけで構成されているかどうか。
+    // 「東京タワー」→「愛宕警察署東京タワー前交番」のように、地名を含みつつも別の施設名が
+    // くっついているだけの無関係な候補を除外するために使う
+    // 全角数字（０-９）・全角ハイフンはString.fromCharCodeで組み立てる（文字コード直指定で確実にするため）
+    const FULLWIDTH_DIGITS = Array.from({ length: 10 }, (_, i) => String.fromCharCode(0xFF10 + i)).join('');
+    const DIGIT_CHARS = '0-9' + FULLWIDTH_DIGITS;
+    const ADDR_SUFFIX_CHARS = DIGIT_CHARS + '\\-' + String.fromCharCode(0xFF0D) + String.fromCharCode(0x30FC) + '〇一二三四五六七八九十百千丁目番地号';
+    function isAddressLikeMatch(title, core) {
+      const idx = title.lastIndexOf(core);
+      if (idx === -1) return false;
+      const tail = title.slice(idx + core.length);
+      return new RegExp(`^[${ADDR_SUFFIX_CHARS}]*$`).test(tail);
+    }
+
+    async function geocodeWithGsiChecked(queryText) {
+      try {
+        const res = await fetch(`https://msearch.gsi.go.jp/address-search/AddressSearch?q=${encodeURIComponent(queryText)}`);
+        const json = await res.json();
+        if (!Array.isArray(json) || !json.length) return { status: 'none' };
+        // 国土地理院APIは、住所として成立しない文字列（POI・ランドマーク名等）に対しても
+        // 地名の一部だけをゆるく拾って無関係な候補を返すことがある。検索文字列から番地・号相当の
+        // 末尾を取り除いた「地名の核」部分を含み、かつその後ろが番地・丁目相当の記号だけの
+        // 候補だけを関連候補として扱うことで、無関係なノイズ候補を除外する
+        const core = (queryText.split(new RegExp(`[${DIGIT_CHARS}]`))[0] || queryText).trim() || queryText.trim();
+        const points = json
+          .map(f => ({
+            lon: f.geometry.coordinates[0],
+            lat: f.geometry.coordinates[1],
+            title: f.properties?.title || '',
+          }))
+          .filter(p => isAddressLikeMatch(p.title, core));
+        if (!points.length) return { status: 'none' };
+        let maxDist = 0;
+        for (let i = 0; i < points.length; i++) {
+          for (let j = i + 1; j < points.length; j++) {
+            maxDist = Math.max(maxDist, haversineKm(points[i].lat, points[i].lon, points[j].lat, points[j].lon));
+          }
+        }
+        if (maxDist > 5) return { status: 'ambiguous' };
+        // 同一地点相当とみなし、最も情報量の多い（タイトル文字列が長い）候補を採用
+        const best = points.reduce((a, b) => (b.title.length > a.title.length ? b : a));
+        const precise = /(番地|番|号)/.test(best.title);
+        return { status: 'ok', lat: best.lat, lon: best.lon, title: best.title, precise };
+      } catch (e) {
+        return { status: 'error' };
+      }
+    }
+
+    function buildDisplayText(pref, city, town, addr) {
+      return `${pref || ''}${city || ''}${town || ''}${addr || ''}`;
+    }
+
+    // 検索文字列をジオコーディングする。戻り値:
+    //   { lat, lon, precise, displayText, deferToNominatim } … 解決できた場合。
+    //     precise=trueなら番地・号までのピンポイント（+マーク対象）。
+    //     deferToNominatim=trueは「番地・丁目等の詳細が指定されていない純粋な行政区域名検索」の
+    //     場合のみ付き、Nominatimがヒットしていればそちらのboundingboxベースの広域ズームを
+    //     優先してよいことを示す（それ以外はNominatimに委ねず必ずこちらの座標を使う。13.29参照）
+    //   { ambiguous: true }                … 市区町村名が省略されており、全国に同名の候補が複数ある
+    //   null                                … Geolonia・国土地理院のいずれでも解決できず（Nominatimのみのフォールバック対象）
+    //
+    // normalizeの`level`（住所文字列をどこまで解釈できたか）と`point.level`（実際の座標がどこまでの
+    // 精度か）は必ずしも一致しない。地番住所（例:「松戸市松戸新田404-5」）は文字列としては
+    // level 8（地番まで解釈済み）になっても、対応する地番の座標データが無ければpointは町丁目
+    // 中心点のまま（point.level 3）に留まる。ここでpoint.levelを見ずにlevelだけで判定すると、
+    // 号を付け足しただけで無関係な町丁目中心点にジャンプしてしまう不具合になるため、
+    // 必ずpoint.level（実際の座標精度）で判定する。
+    async function geocodeJapaneseAddress(searchQuery) {
+      let norm = null;
+      if (typeof normalize !== 'undefined') {
+        try { norm = await normalize.normalize(searchQuery); } catch (e) { norm = null; }
+      }
+
+      if (norm && norm.level >= 2 && norm.point) {
+        // point.level 8 = 街区符号・住居番号または地番の実座標まで正規化ライブラリ自身のデータで得られている（最も精度が高い）
+        if (norm.point.level >= 8) {
+          return { lat: norm.point.lat, lon: norm.point.lng, precise: true,
+            displayText: buildDisplayText(norm.pref, norm.city, norm.town, norm.addr) };
+        }
+        // 座標の精度が町丁目までしかない場合、残り（番地・号相当）があれば国土地理院APIで補完する
+        const rest = (norm.addr || norm.other || '').trim();
+        if (rest) {
+          const reconstructed = `${norm.pref || ''}${norm.city || ''}${norm.town || ''}${rest}`;
+          const gsi = await geocodeWithGsiChecked(reconstructed);
+          if (gsi.status === 'ok') return { lat: gsi.lat, lon: gsi.lon, precise: gsi.precise, displayText: gsi.title };
+          // 番地・丁目等の詳細が指定されたが解決できなかった場合（存在しない丁目等）。
+          // 市区町村・町丁目の中心点にフォールバックするが、ユーザーは番地・丁目レベルの
+          // 詳細を要求しているため、後段でNominatimの結果に委ねてはいけない
+          // （deferToNominatimを付けない。13.29参照）
+          return { lat: norm.point.lat, lon: norm.point.lng, precise: false,
+            displayText: buildDisplayText(norm.pref, norm.city, norm.town) };
+        }
+        // 番地・丁目等の詳細が指定されていない、純粋な行政区域名の検索。
+        // この場合に限り、Nominatimのboundingboxベースの広域ズーム（行政区域全体が見える）を
+        // 優先させてよい（deferToNominatim。13.29参照）
+        return { lat: norm.point.lat, lon: norm.point.lng, precise: false,
+          displayText: buildDisplayText(norm.pref, norm.city, norm.town), deferToNominatim: true };
+      }
+
+      // Geoloniaで市区町村まで解決できない場合（「虎ノ門1」「虎ノ門1丁目」「松戸新田404」
+      // 「大手町」のように市区町村名が省略された入力）は、国土地理院APIへ生の検索文字列の
+      // まま直接問い合わせる。POI・ランドマーク名等の無関係な入力は、geocodeWithGsiChecked内の
+      // 関連候補フィルタ（isAddressLikeMatch）でノイズ候補が除外され自然にnoneになる
+      const gsi = await geocodeWithGsiChecked(searchQuery);
+      if (gsi.status === 'ok') return { lat: gsi.lat, lon: gsi.lon, precise: gsi.precise, displayText: gsi.title };
+      if (gsi.status === 'ambiguous') return { ambiguous: true };
+      return null;
+    }
+
     async function doAddressSearch() {
       const q = document.getElementById('searchInput').value.trim();
       if (!q) return;
       const btn = document.getElementById('searchBtn');
       btn.textContent = '⏳';
       btn.style.pointerEvents = 'none';
+      if (searchPinMarker) { map.removeLayer(searchPinMarker); searchPinMarker = null; }
       try {
         const isPostal = /^[\d\-]+$/.test(q);
         let searchQuery = q;
@@ -4492,25 +4666,56 @@
           searchQuery = [r.address1, r.address2, r.address3].filter(Boolean).join('');
         }
         const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchQuery)}&format=json&accept-language=ja&limit=1&countrycodes=jp&addressdetails=1`;
-        const res = await fetch(url);
-        const json = await res.json();
-        if (!json.length) { alert('該当する住所が見つかりませんでした。'); return; }
-        const { lat, lon, boundingbox } = json[0];
-        if (boundingbox) {
-          const bounds = L.latLngBounds(
-            [+boundingbox[0], +boundingbox[2]],
-            [+boundingbox[1], +boundingbox[3]]
-          );
-          // 都道府県・市区町村など広い行政区域はboundingboxも広くなるため、
-          // その場合は自然なフィットズームをそのまま使う（下限16でクランプしない）。
-          // 個別の住所・建物等の狭いboundingboxは、従来通り16〜17（street level）にクランプする
-          const fitZoom = map.getBoundsZoom(bounds);
-          const zoom = fitZoom <= 15 ? fitZoom : Math.min(17, Math.max(16, fitZoom));
-          map.setView([+lat, +lon], zoom, { animate: false });
-        } else {
-          map.setView([+lat, +lon], 17, { animate: false });
+        const [nomRes, geo] = await Promise.all([
+          fetch(url),
+          geocodeJapaneseAddress(searchQuery),
+        ]);
+        const json = await nomRes.json();
+
+        // geoがambiguous（市区町村名が省略され全国に同名候補が複数ある）と判定した場合は、
+        // Nominatimが（内部ランキングで）たまたま1件だけ選んでしまっていても、その結果は
+        // 信頼できる根拠のない偶然の一致に過ぎないため、Nominatimの成否によらず必ず案内する
+        if (geo?.ambiguous) {
+          alert('同じ名称の住所が全国の複数の市区町村で見つかりました。市区町村名を含めて検索してください。');
+          return;
         }
-        await loadBoundaryForSearchQuery(searchQuery, json[0]);
+        if (!json.length && !geo?.lat) { alert('該当する住所が見つかりませんでした。'); return; }
+
+        // geoが解決していれば、原則としてそちらを優先する（Nominatimは日本語の詳細住所に弱く、
+        // 存在しない丁目等を指定した場合に無関係な場所を返すことがあるため。13.29参照）。
+        // 例外はdeferToNominatim=trueの場合のみ：番地・丁目等の詳細が指定されていない
+        // 純粋な行政区域名検索で、かつNominatimもヒットしている場合に限り、従来通り
+        // Nominatimのboundingboxベースの広域ズームを使う（行政区域名検索の挙動を変えないため）。
+        // Nominatimが失敗した場合は、deferToNominatimの有無によらずgeoを最終フォールバックとして使う
+        const useGeoForView = geo?.lat != null && (!geo.deferToNominatim || !json.length);
+        if (useGeoForView) {
+          map.setView([geo.lat, geo.lon], 17, { animate: false });
+          if (geo.precise) {
+            searchPinMarker = L.marker([geo.lat, geo.lon], { icon: mkPlusIcon(), zIndexOffset: 200 }).addTo(map);
+          }
+        } else if (json.length) {
+          const { lat, lon, boundingbox } = json[0];
+          if (boundingbox) {
+            const bounds = L.latLngBounds(
+              [+boundingbox[0], +boundingbox[2]],
+              [+boundingbox[1], +boundingbox[3]]
+            );
+            // 都道府県・市区町村など広い行政区域はboundingboxも広くなるため、
+            // その場合は自然なフィットズームをそのまま使う（下限16でクランプしない）。
+            // 個別の住所・建物等の狭いboundingboxは、従来通り16〜17（street level）にクランプする
+            const fitZoom = map.getBoundsZoom(bounds);
+            const zoom = fitZoom <= 15 ? fitZoom : Math.min(17, Math.max(16, fitZoom));
+            map.setView([+lat, +lon], zoom, { animate: false });
+          } else {
+            map.setView([+lat, +lon], 17, { animate: false });
+          }
+        }
+        // json.length===0の場合は useGeoForView が必ず true（上記の条件式より）になるため、
+        // geoの座標にもNominatimの座標にも該当しない「どちらも使えない」ケースはここには来ない
+        if (geo?.displayText) {
+          document.getElementById('searchInput').value = geo.displayText;
+        }
+        if (json.length) await loadBoundaryForSearchQuery(searchQuery, json[0]);
       } catch (e) {
         alert('検索に失敗しました。');
       } finally {
@@ -4589,6 +4794,35 @@
         function onMove(e) {
           const h = Math.max(60, Math.min(800, startH - (e.clientY - startY)));
           document.documentElement.style.setProperty('--city-pane-h', h + 'px');
+        }
+        function onUp() {
+          resizer.classList.remove('dragging');
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+        }
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+        e.preventDefault();
+      });
+    })();
+
+    // ===== 住所検索欄 左右リサイズ（等倍〜1.5倍） =====
+    const SEARCH_INPUT_W_BASE = 190;
+    const SEARCH_INPUT_W_MAX = Math.round(SEARCH_INPUT_W_BASE * 1.5);
+    (function () {
+      const resizer = document.getElementById('search-resizer');
+      let startX, startW;
+      resizer.addEventListener('mousedown', e => {
+        startX = e.clientX;
+        startW = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--search-input-w')) || SEARCH_INPUT_W_BASE;
+        resizer.classList.add('dragging');
+        document.body.style.cursor = 'ew-resize';
+        document.body.style.userSelect = 'none';
+        function onMove(e) {
+          const w = Math.max(SEARCH_INPUT_W_BASE, Math.min(SEARCH_INPUT_W_MAX, startW + (e.clientX - startX)));
+          document.documentElement.style.setProperty('--search-input-w', w + 'px');
         }
         function onUp() {
           resizer.classList.remove('dragging');
@@ -4761,6 +4995,7 @@
         ui: {
           sidebarW: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w')) || 400,
           cityPaneH: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--city-pane-h')) || 320,
+          searchInputW: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--search-input-w')) || SEARCH_INPUT_W_BASE,
           cityFillOpacityPercent: Math.round(cityFillOpacity * 100),
           filterText, cityFilterText, townFilterText, groupExpanded,
           secPerUnit, restExcludeMinutes, transitSpeedKmh,
@@ -4943,6 +5178,7 @@
         groupExpanded = ui.groupExpanded || {};
         document.documentElement.style.setProperty('--sidebar-w', ui.sidebarW + 'px');
         document.documentElement.style.setProperty('--city-pane-h', ui.cityPaneH + 'px');
+        document.documentElement.style.setProperty('--search-input-w', (ui.searchInputW || SEARCH_INPUT_W_BASE) + 'px');
         document.getElementById('cityFilterInput').value = csvMode ? townFilterText : cityFilterText;
 
         document.getElementById('fillOpacitySlider').value = ui.cityFillOpacityPercent;
@@ -5038,6 +5274,7 @@
         await saveToSlot(name);
         closeSaveLoadModal();
         alert(`「${name}」として保存しました。`);
+        checkStorageQuota();
       } catch (e) {
         console.error(e);
         alert(`保存に失敗しました。\n${e.message || e}`);
@@ -5098,6 +5335,40 @@
     document.getElementById('slNewName').addEventListener('keydown', e => {
       if (e.key === 'Enter') document.getElementById('slNewSaveBtn').click();
     });
+
+    // ===== ストレージ永続化・容量チェック =====
+    // ベストエフォート型ストレージ（デフォルト）のままだと、PCのディスク容量が逼迫した際に
+    // ブラウザがユーザーへの通知なしにこのサイトのIndexedDBを削除することがある。
+    // 起動時に永続化（persist）を要求してその削除対象から外れるようにし、
+    // あわせて空き容量が少ない場合はセーブデータの整理をユーザーに促す。
+    const STORAGE_WARN_RATIO = 0.8; // 使用量がブラウザの割当上限の80%を超えたら警告
+
+    async function requestPersistentStorage() {
+      if (!navigator.storage?.persist) return;
+      try {
+        if (!(await navigator.storage.persisted())) await navigator.storage.persist();
+      } catch (e) {
+        console.warn('永続化ストレージの要求に失敗しました。', e);
+      }
+    }
+
+    async function checkStorageQuota() {
+      if (!navigator.storage?.estimate) return;
+      try {
+        const { usage, quota } = await navigator.storage.estimate();
+        if (!quota || usage / quota < STORAGE_WARN_RATIO) return;
+        alert(
+          `ブラウザの保存容量が逼迫しています（使用量 ${fmtSize(usage)} / 上限 ${fmtSize(quota)}）。\n` +
+          'このままではブラウザの判断で保存データが自動的に削除されるおそれがあります。\n' +
+          '「再開」画面を開き、不要になったセーブデータを削除することをおすすめします。'
+        );
+      } catch (e) {
+        console.warn('ストレージ容量の確認に失敗しました。', e);
+      }
+    }
+
+    requestPersistentStorage();
+    checkStorageQuota();
 
     // ===== 初期表示 =====
     // 境界設定ペインは常に表示し、起動直後は都道府県トグル一覧を出しておく（データ取得不要ですぐ描画できる）
