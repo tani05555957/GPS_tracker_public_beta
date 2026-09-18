@@ -1365,7 +1365,7 @@
       </div>
       <div class="header-row" id="headerRow2" title="クリックで下段の表示/非表示を切り替えます">
         <div class="slider-row" id="secPerUnitRow" style="display:none;flex-shrink:0"
-          title="1軒あたりの配布に要すると想定する秒数です。大きくするほど推定配布数は少なめ（厳しめ）に、小さくするほど多め（甘め）になります">
+          title="1軒あたりの配布に要すると想定する秒数（基準値）です。大きくするほど推定配布数は少なめ（厳しめ）に、小さくするほど多め（甘め）になります。町丁目の世帯密度が基準(100軒/ha)より低いほど、この値に加重がかかり実効的に大きくなります">
           <span class="slider-label">1軒あたり秒数</span>
           <input type="range" id="secPerUnitSlider" min="10" max="60" step="5" value="30"
             oninput="onSecPerUnitChange(this.value)" onchange="onSecPerUnitCommit(this.value)">
@@ -1530,10 +1530,18 @@
     let rateHeatmapVisible   = false; // 推定配布率ヒートマップ（町丁目単位コロプレス）の表示/非表示
     let rateAutoShown        = false; // 集計結果が得られた際の自動ON表示を既に行ったか（以降はユーザー操作を尊重する）
     let clusterRadiusM       = 15;    // クラスタリング半径(m)
-    let secPerUnit           = 30;    // 1軒あたり想定所要秒数（UIスライダーで10-60秒の範囲で調整可能）
+    let secPerUnit           = 30;    // 1軒あたり想定所要秒数（基準値。密度加重前の値で、UIスライダーで10-60秒の範囲で調整可能）
     const DISTRIBUTION_ESTIMATE_FACTOR = 2 / 3; // 推定配布数が実績より多めに出る傾向があるため一律で縮小補正する係数
+    // 世帯密度による加重: 密度が低い（過疎地）ほど1軒あたりの実効所要秒数を増やし、同じ滞在時間での軒数換算を控えめにする。
+    // weight = (DENSITY_BASE_PER_HA ÷ 密度)^DENSITY_WEIGHT_EXPONENT を secPerUnit に掛けて使う（密度100軒/haでweight=1=無加重）。
+    // 指数は実績近似のため4点（密度100→weight1, 10→2, 1→10, 0.1→50）から求めた近似値で、単一のべき乗曲線に厳密には乗らない
+    // （100→10間の倍率だけ他の区間より小さい）ため中間帯（10軒/ha付近）はやや過大寄りになる。
+    const DENSITY_BASE_PER_HA     = 100;   // 基準密度(軒/ha)。この密度でweight=1（無加重）
+    const DENSITY_WEIGHT_EXPONENT = 0.57;  // べき指数p
+    const DENSITY_WEIGHT_MAX      = 50;    // weight上限（世帯数データ欠損の公園・水面等での発散防止）
     let cityKeyByTownCode    = {};    // 町丁目KEY_CODE → 市区町村key（境界データ読み込み時に構築）
     let townSetaiByCode      = {};    // 町丁目KEY_CODE → 世帯数(SETAI合計、境界shapefileのプロパティから直接集計)
+    let townAreaHaByCode     = {};    // 町丁目KEY_CODE → 面積(ha合計、turf.areaで算出。世帯密度加重の分母に使う)
     let townVisitUnits       = {};    // 町丁目KEY_CODE → 推定軸数（滞在時間/secPerUnitのクラスタをポイント・イン・ポリゴン判定して積算）
     let townDeliveryStats    = {};    // code(住所コード欄ではtown.code、境界設定欄では町丁目KEY_CODE) → {households, visits, rate}
     let cityDeliveryStats    = {};    // 市区町村key → {households, visits, rate}（境界設定モード用のロールアップ結果）
@@ -2896,6 +2904,9 @@
         if (!townCode) return;
         (allFeaturesByCode[townCode] || (allFeaturesByCode[townCode] = [])).push(f);
         townSetaiByCode[townCode] = (townSetaiByCode[townCode] || 0) + (parseInt(f.properties?.SETAI, 10) || 0);
+        let areaHa = 0;
+        try { areaHa = turf.area(f) / 10000; } catch (e) { /* 不正なジオメトリは面積0のまま=加重なし扱い */ }
+        townAreaHaByCode[townCode] = (townAreaHaByCode[townCode] || 0) + areaHa;
         cityKeyByTownCode[townCode] = key;
         townCodes.push(townCode);
       });
@@ -2952,6 +2963,7 @@
         if (!prefCodesToRemove.has(code.slice(0, 2))) return;
         delete allFeaturesByCode[code];
         delete townSetaiByCode[code];
+        delete townAreaHaByCode[code];
         delete cityKeyByTownCode[code];
       });
 
@@ -3604,6 +3616,18 @@
       });
     }
 
+    // 町丁目の世帯密度（軒/ha）から、secPerUnitに掛ける加重係数を返す。
+    // 密度が低いほど1軒あたりの実効所要秒数を増やす（過疎地では同じ滞在時間でも軒数換算を控えめにする）。
+    // 面積・世帯数のいずれかが不明（0）な場合は加重せず1を返す。
+    function densityWeightForTown(code) {
+      const areaHa = townAreaHaByCode[code] || 0;
+      if (areaHa <= 0) return 1;
+      const households = townSetaiByCode[code] || 0;
+      if (households <= 0) return DENSITY_WEIGHT_MAX; // 世帯数データなし（公園・水面等）は上限扱い
+      const density = households / areaHa;
+      return Math.min(DENSITY_WEIGHT_MAX, Math.pow(DENSITY_BASE_PER_HA / density, DENSITY_WEIGHT_EXPONENT));
+    }
+
     // ----- 立ち寄りクラスタの検出とポイント・イン・ポリゴン集計（メッシュを介さず町丁目ポリゴンへ直接判定する） -----
     // GPX読み込み・境界データ読み込み・CSV読み込み・スライダー確定など、集計に影響する操作のたびに呼ばれる。
     // turf.intersectのような重いジオメトリ演算が無いため、進捗バーや中断制御なしで同期的に完了する。
@@ -3619,9 +3643,10 @@
           const clusters = computeVisitClusters(coords, radiusKm);
           for (const c of clusters) {
             const dwellSec = Math.max(0, c.dwellMs / 1000);
-            const units = Math.max(1, Math.round(dwellSec / secPerUnit)); // 滞在時間を軸数に換算（マンション等の複数軒配達を反映）
             const code = findTownCodeAt(c.lat, c.lon);
             if (code) {
+              const effectiveSecPerUnit = secPerUnit * densityWeightForTown(code);
+              const units = Math.max(1, Math.round(dwellSec / effectiveSecPerUnit)); // 滞在時間を密度加重後の軒数に換算
               townVisitUnits[code] = (townVisitUnits[code] || 0) + units * DISTRIBUTION_ESTIMATE_FACTOR;
             }
           }
@@ -4955,7 +4980,7 @@
       // 境界データ未読み込みでも住所コードCSVだけ読み込んでいる場合があるため、両方が空の時だけスキップする
       if (Object.keys(allFeaturesByCode).length === 0 && csvTowns.length === 0) return null;
       const content = {
-        allFeaturesByCode, cityKeyByTownCode, townSetaiByCode,
+        allFeaturesByCode, cityKeyByTownCode, townSetaiByCode, townAreaHaByCode,
         cityNames, cityCodes, cityPrefCodes, citySetai,
         loadedPrefCodesArr: [...loadedPrefCodes],
         autoPrefCodesArr: [...autoPrefCodes],
@@ -5041,6 +5066,7 @@
       allFeaturesByCode = {};
       cityKeyByTownCode = {};
       townSetaiByCode = {};
+      townAreaHaByCode = {};
       loadedPrefCodes = new Set();
       autoPrefCodes = new Set();
       fullyFetchedPrefCodes = new Set();
@@ -5132,6 +5158,7 @@
             allFeaturesByCode = content.allFeaturesByCode;
             cityKeyByTownCode = content.cityKeyByTownCode;
             townSetaiByCode = content.townSetaiByCode;
+            townAreaHaByCode = content.townAreaHaByCode || {}; // 旧セーブデータ（面積未保存）は空扱い＝加重なしにフォールバック
             cityNames = content.cityNames;
             cityCodes = content.cityCodes;
             cityPrefCodes = content.cityPrefCodes;
