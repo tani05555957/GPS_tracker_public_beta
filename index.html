@@ -2339,16 +2339,21 @@
       renderDeviceList();
     }
 
+    // 検索窓の絞り込み条件に一致する端末グループか（未入力なら常に一致）
+    function groupMatchesFilter(group) {
+      const norm = s => String(s ?? '').normalize('NFKC').toLowerCase();
+      const q = norm(filterText).trim();
+      return !q || norm(group.model).includes(q) || norm(group.company).includes(q) ||
+        group.devices.some(d => norm(d.num).includes(q));
+    }
+
     // 端末カード一覧のみ再描画（検索窓は作り直さないので入力中のフォーカス・IME変換が保たれる）
     function renderDeviceList() {
       const list = document.getElementById('deviceList');
       list.innerHTML = '';
-      const norm = s => String(s ?? '').normalize('NFKC').toLowerCase();
-      const q = norm(filterText).trim();
       let hasAny = false;
       GROUPS.forEach((group, gi) => {
-        if (q && !norm(group.model).includes(q) && !norm(group.company).includes(q) &&
-          !group.devices.some(d => norm(d.num).includes(q))) return;
+        if (!groupMatchesFilter(group)) return;
         hasAny = true;
         list.appendChild(makeGroupCard(group, gi));
       });
@@ -2380,7 +2385,11 @@
       onFilter('');
       input.focus();
     }
-    function bulkVisibility(show) { DEVICES.forEach(d => { visibility[d.key] = show; }); render(); }
+    // 「全て表示/非表示」は検索窓で絞り込まれて一覧に出ている端末だけが対象
+    function bulkVisibility(show) {
+      GROUPS.filter(groupMatchesFilter).forEach(g => g.devices.forEach(d => { visibility[d.key] = show; }));
+      render();
+    }
 
     // ===== 配布データCSV読み込み =====
     // 想定フォーマット: 「日付」「端末」「GPS」の3列。GPS列は
