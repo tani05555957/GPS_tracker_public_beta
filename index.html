@@ -894,6 +894,16 @@
       white-space: nowrap;
     }
 
+    #colPickModal .cp-row .cp-rec {
+      flex-shrink: 0;
+      font-size: 9px;
+      font-weight: 700;
+      color: #fff;
+      background: var(--accent);
+      border-radius: 3px;
+      padding: 1px 5px;
+    }
+
     #colPickModal .cp-row.cp-none {
       border-top: 1px solid var(--border);
       color: var(--text-muted);
@@ -3657,8 +3667,14 @@
     // ----- 立ち寄りクラスタの検出とポイント・イン・ポリゴン集計（メッシュを介さず町丁目ポリゴンへ直接判定する） -----
     // GPX読み込み・境界データ読み込み・CSV読み込み・スライダー確定など、集計に影響する操作のたびに呼ばれる。
     // turf.intersectのような重いジオメトリ演算が無いため、進捗バーや中断制御なしで同期的に完了する。
+    // 呼び出し元の多くはawaitせずに呼ぶため、yieldToUI()の間に別の実行が始まって多重実行になることがある。
+    // グローバルのtownVisitUnitsへ直接加算すると、古い実行が新しい実行の結果へ二重加算してしまう
+    // （例: GPX読込後に住所コードを読み込むと推定配布数が約2倍になる）ため、ローカルに集計して
+    // 世代カウンタで「最後に呼ばれた実行だけが結果を反映する」ようにする。
+    let visitEstimateGeneration = 0;
     async function computeVisitEstimates() {
-      townVisitUnits = {};
+      const gen = ++visitEstimateGeneration;
+      const units = {};
 
       if (townSpatialIdx) {
         const radiusKm = clusterRadiusM / 1000;
@@ -3672,15 +3688,19 @@
             const code = findTownCodeAt(c.lat, c.lon);
             if (code) {
               const effectiveSecPerUnit = secPerUnit * densityWeightForTown(code);
-              const units = Math.max(1, Math.round(dwellSec / effectiveSecPerUnit)); // 滞在時間を密度加重後の軒数に換算
-              townVisitUnits[code] = (townVisitUnits[code] || 0) + units * DISTRIBUTION_ESTIMATE_FACTOR;
+              const u = Math.max(1, Math.round(dwellSec / effectiveSecPerUnit)); // 滞在時間を密度加重後の軒数に換算
+              units[code] = (units[code] || 0) + u * DISTRIBUTION_ESTIMATE_FACTOR;
             }
           }
           processed++;
-          if (processed % 3 === 0) await yieldToUI();
+          if (processed % 3 === 0) {
+            await yieldToUI();
+            if (gen !== visitEstimateGeneration) return; // より新しい実行が始まったので中断する
+          }
         }
       }
 
+      townVisitUnits = units;
       await aggregateTownStats();
     }
 
@@ -3820,31 +3840,90 @@
       return candidates.length === 1 ? candidates[0] : -1;
     }
 
-    // ヘッダー行から統計上世帯数列を探す。「統計上世帯数」という文字列を含む列（「KEY_CODE_統計上世帯数」等
-    // も含む）が1つだけならそれを採用する。候補が複数ある場合、または見つからない場合は呼び出し側で
-    // ユーザーに選ばせる（境界データのSETAIへのフォールバックも呼び出し側の責任）
-    function detectStatHouseholdsColIdx(headerCols) {
-      const candidates = [];
-      headerCols.forEach((h, idx) => {
-        if ((h || '').trim().includes('統計上世帯数')) candidates.push(idx);
-      });
-      return candidates.length === 1 ? candidates[0] : -1;
+    // 列選択ダイアログで「推奨」表示する列を、ヘッダー名のキーワードから推定する。
+    // keywordGroupsは優先度順で、あるグループで候補がちょうど1列に絞れたらそれを返す（見つからなければ-1）
+    function detectColByKeywords(headerCols, indexes, keywordGroups) {
+      for (const keywords of keywordGroups) {
+        const candidates = indexes.filter(idx => {
+          const name = (headerCols[idx] || '').trim();
+          return keywords.some(k => name.includes(k));
+        });
+        if (candidates.length === 1) return candidates[0];
+      }
+      return -1;
     }
 
-    // ヘッダー名に「配布数」という文字列を含む列を探す。1列だけ見つかればそれを採用する
-    function autoDetectDistributionColIdx(headerCols, excludeIndexes) {
-      const candidates = [];
-      headerCols.forEach((h, idx) => {
-        if (excludeIndexes.includes(idx)) return;
-        const name = (h || '').trim();
-        if (name.includes('配布数')) candidates.push(idx);
-      });
-      return candidates.length === 1 ? candidates[0] : -1;
+    // 配布数(実数)ダイアログの「推奨」列を推定する。「配布実数」「配布部数」「配布数」を含む列を優先し、
+    // 無ければ「見込数」「見込み数」「可能数」を含む列を次点とする。「配布数可能数」のように両方を含む列は
+    // 見込み側の値とみなして次点に回す。同じ優先度の列が複数あれば左の列を推奨する
+    function detectDistributionColIdx(headerCols, indexes) {
+      const ACTUAL = ['配布実数', '配布部数', '配布数'];
+      const ESTIMATE = ['見込数', '見込み数', '可能数'];
+      const has = (idx, keywords) => keywords.some(k => (headerCols[idx] || '').includes(k));
+      const actual = indexes.find(idx => has(idx, ACTUAL) && !has(idx, ESTIMATE));
+      if (actual !== undefined) return actual;
+      const estimate = indexes.find(idx => has(idx, ESTIMATE));
+      return estimate !== undefined ? estimate : -1;
+    }
+
+    // CSVの数値セルを数値に変換する（読めなければNaN）。全角数字・全角カンマ・3桁区切り・
+    // 末尾の単位（件/世帯など）を許容する
+    function parseCSVNumber(s) {
+      const v = String(s || '')
+        .replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+        .replace(/[,，\s]/g, '')
+        .replace(/^[－−]/, '-')
+        .replace(/(件|世帯|戸|軒|枚|部|人)$/, '');
+      return /^[-+]?\d+(\.\d+)?$/.test(v) ? Number(v) : NaN;
+    }
+
+    // 各列をデータ行の中身から'number'/'text'/'empty'に分類する。
+    // 空欄以外のセルの8割以上が数値として読める列を数値列とみなす
+    function classifyCSVColumns(dataRows, colCount) {
+      const sample = dataRows.slice(0, 200);
+      const types = [];
+      for (let idx = 0; idx < colCount; idx++) {
+        let nonEmpty = 0, numeric = 0;
+        for (const cols of sample) {
+          const v = (cols[idx] || '').trim();
+          if (!v) continue;
+          nonEmpty++;
+          if (!isNaN(parseCSVNumber(v))) numeric++;
+        }
+        types.push(nonEmpty === 0 ? 'empty' : (numeric / nonEmpty >= 0.8 ? 'number' : 'text'));
+      }
+      return types;
+    }
+
+    // 1行目がカラム名の行らしいかを判定する。住所コード列のカラム名（KEY_CODE/住所コード）か、
+    // 町丁目名・統計上世帯数・配布数に当たりそうなカラム名が1つでもあればカラム名の行とみなす。
+    // 「配布」「世帯」のような短い語だと表題（例:「配布報告書」）にも当たってしまうため、カラム名として使われる語に限定する
+    function looksLikeCSVHeaderRow(cols) {
+      if (detectCodeColIdx(cols) !== -1) return true;
+      const keywords = ['町丁目', '町字', '町名', '大字', 'S_NAME', '世帯数', 'SETAI', '配布数', '配布実績', '配布部数', '配布枚数', '部数', '枚数'];
+      return cols.some(c => keywords.some(k => (c || '').includes(k)));
+    }
+
+    // CSV由来の文字列をinnerHTMLへ埋め込むためのエスケープ
+    function escHtml(s) {
+      return String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
     }
 
     // 列をユーザーに選択させるモーダルを表示し、選択された列インデックスを返す
-    // （キャンセル時はCSV_PICK_CANCELLEDをthrow）。noneLabelを指定すると「該当列は無い」（-1）も選べる
-    function pickColumn(headerCols, sampleCols, { title, desc, excludeIndexes = [], noneLabel = null }) {
+    // （キャンセル時はCSV_PICK_CANCELLEDをthrow）。noneLabelを指定すると一番下に「選択しない」（-1）も選べる。
+    // onlyIndexesを指定するとその列だけを表示し、recommendIdxの列には「推奨」を付ける（並び順はCSVの列順のまま）
+    function pickColumn(headerCols, sampleCols, { title, desc, excludeIndexes = [], onlyIndexes = null, recommendIdx = -1, noneLabel = null }) {
+      const indexes = (onlyIndexes || headerCols.map((_, idx) => idx)).filter(idx => !excludeIndexes.includes(idx));
+      const items = indexes
+        .map(idx => ({ value: idx, no: idx + 1, head: (headerCols[idx] || '').trim(), sample: (sampleCols[idx] || '').trim(), rec: idx === recommendIdx }))
+        .filter(it => it.head || it.sample)
+        .map(it => ({ ...it, head: it.head || '(無題)' }));
+      return showPickModal({ title, desc, items, noneLabel });
+    }
+
+    // 選択モーダルを表示し、クリックされた項目のvalueを返す（キャンセル時はCSV_PICK_CANCELLEDをthrow）。
+    // items: [{value, no, head?, sample, rec}]。noneLabelを指定すると一番下に「選択しない」（-1）も選べる
+    function showPickModal({ title, desc, items, noneLabel = null }) {
       return new Promise((resolve, reject) => {
         const modal = document.getElementById('colPickModal');
         const list = document.getElementById('colPickList');
@@ -3853,18 +3932,15 @@
         document.getElementById('colPickDesc').textContent = desc;
         list.innerHTML = '';
 
-        headerCols.forEach((h, idx) => {
-          if (excludeIndexes.includes(idx)) return;
-          const name = (h || '').trim();
-          const sample = (sampleCols[idx] || '').trim();
-          if (!name && !sample) return;
+        items.forEach(it => {
           const row = document.createElement('div');
           row.className = 'cp-row';
           row.innerHTML =
-            `<span class="cp-idx">${idx + 1}</span>` +
-            `<span class="cp-head">${name || '(無題)'}</span>` +
-            `<span class="cp-sample">${sample}</span>`;
-          row.addEventListener('click', () => { cleanup(); resolve(idx); });
+            `<span class="cp-idx">${it.no}</span>` +
+            (it.head ? `<span class="cp-head">${escHtml(it.head)}</span>` : '') +
+            (it.rec ? '<span class="cp-rec">推奨</span>' : '') +
+            `<span class="cp-sample">${escHtml(it.sample)}</span>`;
+          row.addEventListener('click', () => { cleanup(); resolve(it.value); });
           list.appendChild(row);
         });
 
@@ -3904,70 +3980,94 @@
         const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
         if (lines.length < 2) throw new Error('データが見つかりません');
 
-        const headerCols = parseCSVLine(lines[0]);
-        const firstDataCols = parseCSVLine(lines[1]);
+        // カラム名は1行目に書かれている前提。1行目にカラム名らしきものが無いCSVは読み込まずに終了する
+        const allRows = lines.map(parseCSVLine);
+        const headerCols = allRows[0];
+        if (!looksLikeCSVHeaderRow(headerCols)) {
+          alert('カラム名（町丁目名、統計上世帯数、配布数）が見当たりません。1行目にカラム名を記載してください。');
+          btn.textContent = '📊 住所コード読み込み';
+          return;
+        }
+        const dataRows = allRows.slice(1);
+        if (!dataRows.length) throw new Error('カラム名の行より下にデータが見つかりません');
 
-        // 住所コード列を判定する。「KEY_CODE」列があれば最優先、無ければ「住所コード」列、
-        // それも無ければユーザーに列を選ばせる
-        let codeColIdx = detectCodeColIdx(headerCols);
-        if (codeColIdx === -1) {
-          try {
-            codeColIdx = await pickColumn(headerCols, firstDataCols, {
+        // 列の型（テキスト/数値）はデータ行の中身から判定する。ダイアログのサンプルには各列で最初の空でない値を出す
+        const colCount = allRows.reduce((m, r) => Math.max(m, r.length), 0);
+        const colTypes = classifyCSVColumns(dataRows, colCount);
+        const sampleCols = colTypes.map((_, idx) => {
+          const row = dataRows.find(r => (r[idx] || '').trim());
+          return row ? row[idx] : '';
+        });
+        const allColIndexes = colTypes.map((_, idx) => idx);
+
+        let codeColIdx, townColIdx, statHouseholdsColIdx, distColIdx;
+        try {
+          // 住所コード列を判定する。「KEY_CODE」列があれば最優先、無ければ「住所コード」列、
+          // それも無ければユーザーに列を選ばせる
+          codeColIdx = detectCodeColIdx(headerCols);
+          if (codeColIdx === -1) {
+            codeColIdx = await pickColumn(headerCols, sampleCols, {
               title: '住所コードの列を選択してください',
               desc: 'CSVから住所コード（KEY_CODE）の列を自動判別できませんでした。該当する列をクリックして選択してください。',
             });
-          } catch (e) {
-            if (e === CSV_PICK_CANCELLED) { btn.textContent = '📊 住所コード読み込み'; return; }
-            throw e;
           }
+
+          // 町丁目名・統計上世帯数・配布数(実数)は、CSVのレイアウトが決まっていないため毎回ユーザーに列を選ばせる。
+          // 町丁目名はテキスト列、世帯数と配布数は数値列だけを候補にする。世帯数と配布数は同じ列を
+          // 選ぶこともある（実数列が無い場合など）ため、配布数の候補から世帯数で選んだ列は除外しない
+          const textIndexes = allColIndexes.filter(idx => idx !== codeColIdx && colTypes[idx] === 'text');
+          const numberIndexes = allColIndexes.filter(idx => idx !== codeColIdx && colTypes[idx] === 'number');
+
+          townColIdx = await pickColumn(headerCols, sampleCols, {
+            title: '町丁目名の列を選択してください',
+            desc: 'テキストの列だけを表示しています。選んだ列の1つ手前の列を市区町村名として一緒に読み込みます。',
+            onlyIndexes: textIndexes,
+            recommendIdx: detectColByKeywords(headerCols, textIndexes, [['町丁目', '町字', '町名', '大字', 'S_NAME'], ['町']]),
+            noneLabel: '（選択しない）',
+          });
+
+          statHouseholdsColIdx = await pickColumn(headerCols, sampleCols, {
+            title: '統計上世帯数の列を選択してください',
+            desc: '数値の列だけを表示しています。選択しない場合は境界データの世帯数を使用します。',
+            onlyIndexes: numberIndexes,
+            recommendIdx: detectColByKeywords(headerCols, numberIndexes, [['統計上世帯数'], ['世帯数', 'SETAI']]),
+            noneLabel: '（選択しない）',
+          });
+
+          distColIdx = await pickColumn(headerCols, sampleCols, {
+            title: '配布数(実数)の列を選択してください',
+            desc: '数値の列だけを表示しています。選択しない場合は配布数0件として扱います。',
+            onlyIndexes: numberIndexes,
+            recommendIdx: detectDistributionColIdx(headerCols, numberIndexes),
+            noneLabel: '（選択しない）',
+          });
+        } catch (e) {
+          if (e === CSV_PICK_CANCELLED) { btn.textContent = '📊 住所コード読み込み'; return; }
+          throw e;
         }
 
-        // 統計上世帯数列を判定する。「統計上世帯数」列があれば最優先、無ければユーザーに列を選ばせる
-        // （「列は無い」を選んだ場合は境界データのSETAIにフォールバックする、従来どおりの挙動）
-        let statHouseholdsColIdx = detectStatHouseholdsColIdx(headerCols);
-        if (statHouseholdsColIdx === -1) {
-          try {
-            statHouseholdsColIdx = await pickColumn(headerCols, firstDataCols, {
-              title: '統計上世帯数の列を選択してください',
-              desc: 'CSVから「統計上世帯数」の列を自動判別できませんでした。該当する列をクリックして選択してください。',
-              excludeIndexes: [codeColIdx, 2, 3, 4],
-              noneLabel: '統計上世帯数の列は無い（境界データの世帯数を使用）',
-            });
-          } catch (e) {
-            if (e === CSV_PICK_CANCELLED) { btn.textContent = '📊 住所コード読み込み'; return; }
-            throw e;
-          }
-        }
-
-        const fixedColIndexes = [codeColIdx, statHouseholdsColIdx, 2, 3, 4].filter(i => i >= 0); // 住所コード, 統計上世帯数, prefName, cityName, townName
-        let distColIdx = autoDetectDistributionColIdx(headerCols, fixedColIndexes);
-        if (distColIdx === -1 && headerCols.length > fixedColIndexes.length + 1) {
-          // 自動判別できず、かつ配布数らしき候補列が存在しうる場合のみ選択を求める
-          try {
-            distColIdx = await pickColumn(headerCols, firstDataCols, {
-              title: '配布数の列を選択してください',
-              desc: 'CSVから「配布数」の列を自動判別できませんでした。該当する列をクリックして選択してください。',
-              excludeIndexes: fixedColIndexes,
-              noneLabel: '配布数の列は無い（0件として扱う）',
-            });
-          } catch (e) {
-            if (e === CSV_PICK_CANCELLED) { btn.textContent = '📊 住所コード読み込み'; return; }
-            throw e;
-          }
-        }
+        // 市区町村名は町丁目名の1つ手前の列にあることが多いため、そこがテキスト列なら一緒に読み込む。
+        // 都道府県名（絞り込み検索用）は「都道府県」を含むカラム名のテキスト列があれば読み込む
+        // （手前の列が都道府県名の列なら市区町村名とはみなさない）
+        const prefColIdx = detectColByKeywords(headerCols, allColIndexes.filter(idx => colTypes[idx] === 'text'), [['都道府県']]);
+        const cityColIdx = townColIdx > 0 && colTypes[townColIdx - 1] === 'text' && townColIdx - 1 !== codeColIdx && townColIdx - 1 !== prefColIdx ? townColIdx - 1 : -1;
+        const cellText = (cols, idx) => idx >= 0 ? (cols[idx] || '').trim() : '';
+        const cellCount = (cols, idx) => {
+          const n = idx >= 0 ? parseCSVNumber(cols[idx]) : NaN;
+          return isNaN(n) ? 0 : Math.round(n);
+        };
 
         // 追加読み込み時は既存の町丁目コードと重複する行を無視し、csvTownsに合流させる
         const existingCodes = new Set(csvTowns.map(t => t.code));
         const newTowns = [];
         const seenCodes = new Set();
-        for (let i = 1; i < lines.length; i++) {
-          const cols = parseCSVLine(lines[i]);
+        for (const cols of dataRows) {
           const code = (cols[codeColIdx] || '').trim();
-          const prefName = (cols[2] || '').trim();
-          const cityName = (cols[3] || '').trim();
-          const townName = (cols[4] || '').trim();
-          const distributionCount = distColIdx >= 0 ? (parseInt((cols[distColIdx] || '').replace(/,/g, ''), 10) || 0) : 0;
-          const statHouseholds = statHouseholdsColIdx >= 0 ? (parseInt((cols[statHouseholdsColIdx] || '').replace(/,/g, ''), 10) || 0) : 0;
+          const prefName = cellText(cols, prefColIdx);
+          const cityName = cellText(cols, cityColIdx);
+          const townName = cellText(cols, townColIdx);
+          const distributionCount = cellCount(cols, distColIdx);
+          const statHouseholds = cellCount(cols, statHouseholdsColIdx);
           if (code && /^\d+$/.test(code) && !seenCodes.has(code) && !existingCodes.has(code)) {
             seenCodes.add(code);
             newTowns.push({ code, prefName, cityName, townName, distributionCount, statHouseholds });
